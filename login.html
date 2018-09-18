@@ -1,0 +1,85 @@
+<html>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>
+</title>
+<body>
+<table align="center">
+    <tr>
+        <td>
+            用户名：
+        </td>
+        <td>
+            <input id="name" />
+        </td>
+    </tr>
+    <tr>
+        <td>
+            密码：
+        </td>
+        <td>
+            <input id="password" type="password" />
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <input type="button" value="登录" onclick="login()" />
+        </td>
+    </tr>
+</table>
+</body>
+<script type="application/javascript">
+    Date.prototype.Format = function(fmt) {
+        var o = {
+            "M+": this.getMonth() + 1,
+            "d+": this.getDate(),
+            "h+": this.getHours(),
+            "m+": this.getMinutes(),
+            "s+": this.getSeconds(),
+            "q+": Math.floor((this.getMonth() + 3) / 3),
+            "S": this.getMilliseconds()
+        };
+        if (/(y+)/.test(fmt)) fmt = fmt.replace(RegExp.$1, (this.getFullYear() + "").substr(4 - RegExp.$1.length));
+        for (var k in o)
+            if (new RegExp("(" + k + ")").test(fmt)) fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
+        return fmt
+    };
+    var time1 = new Date().Format("yyyyMMddhhmm");
+    console.log(time1);
+
+    function login() {
+        var name = document.getElementById("name").value;
+        var password = document.getElementById("password").value;
+        console.log(name, password);
+        createxmlHttp(name, password)
+    }
+
+    function createxmlHttp(name, password) {
+        var xmlhttp;
+        if (window.XMLHttpRequest) {
+            xmlhttp = new XMLHttpRequest()
+        } else {
+            xmlhttp = new ActiveXObject("Microsoft.XMLHTTP")
+        }
+        console.log(document.cookie);
+        xmlhttp.onreadystatechange = function() {
+            if (xmlhttp.readyState == 4 && xmlhttp.status == 200) {
+                if (xmlhttp.responseText == "success") {
+                    window.location.reload()
+                } else {
+                    alert("用户名或密码有误")
+                }
+            }
+        };
+        xmlhttp.open('post', '/ui/login', true);
+        xmlhttp.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+        xmlhttp.send(b64EncodeUnicode('{"username":"' + name + '","password":"' + password + '"}'))
+    }
+
+    function b64EncodeUnicode(str) {
+        return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
+            return String.fromCharCode('0x' + p1)
+        }))
+    }
+</script>
+
+</html>
