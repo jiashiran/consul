@@ -21,7 +21,19 @@ import (
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/mitchellh/mapstructure"
+	"github.com/astaxie/session"
+	_ "github.com/astaxie/session/providers/memory"
+	"io/ioutil"
+	"encoding/base64"
 )
+
+var GlobalSessions *session.Manager
+func init() {
+	var err error
+	GlobalSessions, err = session.NewManager("memory", "gosessionid", 3600)
+	fmt.Println(err)
+	go GlobalSessions.GC()
+}
 
 // MethodNotAllowedError should be returned by a handler when the HTTP method is not allowed.
 type MethodNotAllowedError struct {
@@ -102,6 +114,8 @@ type wrappedMux struct {
 
 // ServeHTTP implements the http.Handler interface.
 func (w *wrappedMux) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Add("Access-Control-Allow-Origin","*")
+	resp.Header().Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 	w.handler.ServeHTTP(resp, req)
 }
 
@@ -146,6 +160,8 @@ func (s *HTTPServer) handler(enableDebug bool) http.Handler {
 	for pattern, fn := range endpoints {
 		thisFn := fn
 		methods, _ := allowedMethods[pattern]
+		fmt.Println("methods:",methods)
+		fmt.Println("pattern:",pattern)
 		bound := func(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
 			return thisFn(s, resp, req)
 		}
@@ -183,7 +199,8 @@ func (s *HTTPServer) handler(enableDebug bool) http.Handler {
 			uifs = &redirectFS{fs: uifs}
 		}
 
-		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(uifs)))
+		mux.Handle("/ui/",StripPrefix("/ui/", http.FileServer(uifs)) )//http.StripPrefix("/ui/", http.FileServer(uifs))
+		//mux.Handle("/static/",StripPrefix("/static/", http.FileServer(uifs)) )
 	}
 
 	// Wrap the whole mux with a handler that bans URLs with non-printable
@@ -197,6 +214,78 @@ func (s *HTTPServer) handler(enableDebug bool) http.Handler {
 		mux:     mux,
 		handler: h,
 	}
+}
+
+func StripPrefix(prefix string, h http.Handler) http.Handler {
+	if prefix == "" {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := strings.TrimPrefix(r.URL.Path, prefix); len(p) < len(r.URL.Path){
+			if !login(w,r,p){
+				return
+			}
+			r2 := new(http.Request)
+			*r2 = *r
+			r2.URL = new(url.URL)
+			*r2.URL = *r.URL
+			r2.URL.Path = p
+			h.ServeHTTP(w, r2)
+		} else {
+			fmt.Println("NotFound",prefix,p)
+			NotFound(w, r)
+		}
+	})
+}
+
+func login(w http.ResponseWriter, r *http.Request,p string) bool {
+	defer func() {
+		if err:=recover();err!=nil{
+			fmt.Println("err：",err)
+		}
+	}()
+	sess := GlobalSessions.SessionStart(w, r)
+	user := sess.Get("user")
+	if user == nil {
+		if strings.Contains(p,"login"){//登录逻辑
+			bs,err := ioutil.ReadAll(r.Body)
+			fmt.Println(string(bs),err)
+			decodeBytes, err := base64.StdEncoding.DecodeString(string(bs))
+			fmt.Println("no get user",string(decodeBytes),err)
+			var user User
+			err = json.Unmarshal(decodeBytes,&user)
+			fmt.Println(user,err)
+			if user.Name == "admin" && user.Pwd=="Aa123456" {
+				sess.Set("user",string(bs))
+				io.WriteString(w,"success")
+			}else {
+				io.WriteString(w,"fail")
+			}
+			return false
+		}
+		html := `<html><meta http-equiv="Content-Type"content="text/html; charset=utf-8"/><title></title><body><table><tr><td>用户名：</td><td><input id="name"/></td></tr><tr><td>密码：</td><td><input id="password"type="password"/></td></tr><tr><td><input type="button"value="登录"onclick="login()"/></td></tr></table></body><script type="application/javascript">function login(){var name=document.getElementById("name").value;var password=document.getElementById("password").value;console.log(name,password);createxmlHttp(name,password)}function createxmlHttp(name,password){var xmlhttp;if(window.XMLHttpRequest){xmlhttp=new XMLHttpRequest()}else{xmlhttp=new ActiveXObject("Microsoft.XMLHTTP")}console.log(document.cookie);xmlhttp.onreadystatechange=function(){if(xmlhttp.readyState==4&&xmlhttp.status==200){if(xmlhttp.responseText=="success"){window.location.reload()}else{alert("用户名或密码有误")}}};xmlhttp.open('post','http://localhost:8500/ui/login',true);xmlhttp.setRequestHeader("Content-type","application/x-www-form-urlencoded");xmlhttp.send(b64EncodeUnicode('{"username":"'+name+'","password":"'+password+'"}'))}function b64EncodeUnicode(str){return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,function(match,p1){return String.fromCharCode('0x'+p1)}))}</script></html>`
+		io.WriteString(w,html)
+		return false
+	}else {
+		decodeBytes, err := base64.StdEncoding.DecodeString(user.(string))
+		fmt.Println("no get user",string(decodeBytes),err)
+		var user User
+		err = json.Unmarshal(decodeBytes,&user)
+		fmt.Println(user,err)
+		return  true
+	}
+}
+type User struct {
+	Name string `json:"username"`
+	Pwd string  `json:"password"`
+}
+
+func NotFound(w http.ResponseWriter, r *http.Request) { Error(w, "404 page not found", http.StatusNotFound) }
+func Error(w http.ResponseWriter, error string, code int) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(code)
+	fmt.Fprintln(w, error)
 }
 
 // nodeName returns the node name of the agent
