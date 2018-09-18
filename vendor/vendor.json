@@ -460,7 +460,9 @@
 		{"path":"k8s.io/client-go/util/flowcontrol","checksumSHA1":"yXKT7cJNCv5vjwGKhpc/DUsQg+A=","revision":"f2f85107cac6fe04c30435ca0ac0c3318fd1b94c","revisionTime":"2018-08-21T04:50:00Z","version":"release-8.0","versionExact":"release-8.0"},
 		{"path":"k8s.io/client-go/util/homedir","checksumSHA1":"WRb0rXGx56fwcCisVW7GoI6gO/A=","revision":"f2f85107cac6fe04c30435ca0ac0c3318fd1b94c","revisionTime":"2018-08-21T04:50:00Z","version":"release-8.0","versionExact":"release-8.0"},
 		{"path":"k8s.io/client-go/util/integer","checksumSHA1":"W6bJiNAwgNwNJC+y+TPtacgUGlY=","revision":"f2f85107cac6fe04c30435ca0ac0c3318fd1b94c","revisionTime":"2018-08-21T04:50:00Z","version":"release-8.0","versionExact":"release-8.0"},
-		{"path":"k8s.io/client-go/util/jsonpath","checksumSHA1":"1+CyY2zkEQX4VrByn/77x6gWy78=","revision":"f2f85107cac6fe04c30435ca0ac0c3318fd1b94c","revisionTime":"2018-08-21T04:50:00Z","version":"release-8.0","versionExact":"release-8.0"}
+		{"path":"k8s.io/client-go/util/jsonpath","checksumSHA1":"1+CyY2zkEQX4VrByn/77x6gWy78=","revision":"f2f85107cac6fe04c30435ca0ac0c3318fd1b94c","revisionTime":"2018-08-21T04:50:00Z","version":"release-8.0","versionExact":"release-8.0"},
+		{"checksumSHA1": "2MWdqOMWeXGogvJKNFln73+kutw=", "path": "github.com/astaxie/session", "revision": "95d7fe18579cfbdd564189bd3ccc30b17aa06d35", "revisionTime": "2013-04-08T05:01:57Z"},
+		{"checksumSHA1": "Dv+/ZVQ23JAJeTxFDU7ck36iT3s=", "path": "github.com/astaxie/session/providers/memory", "revision": "95d7fe18579cfbdd564189bd3ccc30b17aa06d35", "revisionTime": "2013-04-08T05:01:57Z"}
 	],
 	"rootPath": "github.com/hashicorp/consul"
 }
