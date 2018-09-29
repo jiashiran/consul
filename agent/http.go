@@ -21,19 +21,13 @@ import (
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/mitchellh/mapstructure"
-	"github.com/astaxie/session"
-	_ "github.com/astaxie/session/providers/memory"
 	"io/ioutil"
 	"encoding/base64"
-)
 
-var GlobalSessions *session.Manager
-func init() {
-	var err error
-	GlobalSessions, err = session.NewManager("memory", "gosessionid", 3600)
-	fmt.Println(err)
-	go GlobalSessions.GC()
-}
+	"github.com/gorilla/sessions"
+	"github.com/gorilla/securecookie"
+)
+var GlobalSessions = sessions.NewCookieStore(securecookie.GenerateRandomKey(32))
 
 // MethodNotAllowedError should be returned by a handler when the HTTP method is not allowed.
 type MethodNotAllowedError struct {
@@ -244,9 +238,12 @@ func login(w http.ResponseWriter, r *http.Request,p string) bool {
 			fmt.Println("err：",err)
 		}
 	}()
-	sess := GlobalSessions.SessionStart(w, r)
-	user := sess.Get("user")
-	if user == nil {
+	sess,err := GlobalSessions.Get(r, "user")
+	if err != nil{
+		fmt.Println(err)
+	}
+	user := sess.Values["user"]
+	if user == nil || user.(string) == "" {
 		if strings.Contains(p,"login"){//登录逻辑
 			bs,err := ioutil.ReadAll(r.Body)
 			fmt.Println(string(bs),err)
@@ -256,7 +253,8 @@ func login(w http.ResponseWriter, r *http.Request,p string) bool {
 			err = json.Unmarshal(decodeBytes,&user)
 			fmt.Println(user,err)
 			if user.Name == "admin" && user.Pwd=="Aa123456" + time.Now().Format("200601021504") {
-				sess.Set("user",string(bs))
+				sess.Values["user"] = string(bs)
+				sess.Save(r,w)
 				io.WriteString(w,"success")
 			}else {
 				io.WriteString(w,"fail")
