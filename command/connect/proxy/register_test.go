@@ -6,8 +6,9 @@ import (
 
 	"github.com/hashicorp/consul/agent"
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/sdk/testutil"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/consul/testrpc"
-	"github.com/hashicorp/consul/testutil/retry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +16,7 @@ func TestRegisterMonitor_good(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	a := agent.NewTestAgent(t.Name(), ``)
+	a := agent.NewTestAgent(t, t.Name(), ``)
 	defer a.Shutdown()
 	client := a.Client()
 
@@ -24,7 +25,7 @@ func TestRegisterMonitor_good(t *testing.T) {
 
 	// Verify the settings
 	require.Equal(api.ServiceKindConnectProxy, service.Kind)
-	require.Equal("foo", service.ProxyDestination)
+	require.Equal("foo", service.Proxy.DestinationServiceName)
 	require.Equal("127.0.0.1", service.Address)
 	require.Equal(1234, service.Port)
 
@@ -37,25 +38,26 @@ func TestRegisterMonitor_good(t *testing.T) {
 
 func TestRegisterMonitor_heartbeat(t *testing.T) {
 	t.Parallel()
-	require := require.New(t)
 
-	a := agent.NewTestAgent(t.Name(), ``)
+	a := agent.NewTestAgent(t, t.Name(), ``)
 	defer a.Shutdown()
 	client := a.Client()
 
-	testrpc.WaitForLeader(t, a.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 	m, _ := testMonitor(t, client)
 	defer m.Close()
-
-	// Get the check and verify that it is passing
-	checks, err := client.Agent().Checks()
-	require.NoError(err)
-	require.Contains(checks, m.checkID())
-	require.Equal("passing", checks[m.checkID()].Status)
-
-	// Purposely fail the TTL check, verify it becomes healthy again
-	require.NoError(client.Agent().FailTTL(m.checkID(), ""))
 	retry.Run(t, func(r *retry.R) {
+		// Get the check and verify that it is passing
+		checks, err := client.Agent().Checks()
+		require.NoError(r, err)
+		require.Contains(r, checks, m.checkID())
+		require.Equal(r, "passing", checks[m.checkID()].Status)
+		// Purposely fail the TTL check, verify it becomes healthy again
+		require.NoError(r, client.Agent().FailTTL(m.checkID(), ""))
+	})
+
+	retry.Run(t, func(r *retry.R) {
+
 		checks, err := client.Agent().Checks()
 		if err != nil {
 			r.Fatalf("err: %s", err)
@@ -76,7 +78,7 @@ func TestRegisterMonitor_heartbeat(t *testing.T) {
 // It waits until the service appears in the catalog and then returns.
 func testMonitor(t *testing.T, client *api.Client) (*RegisterMonitor, *api.AgentService) {
 	// Setup the monitor
-	m := NewRegisterMonitor()
+	m := NewRegisterMonitor(testutil.Logger(t))
 	m.Client = client
 	m.Service = "foo"
 	m.LocalAddress = "127.0.0.1"

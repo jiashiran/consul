@@ -12,7 +12,7 @@ Command: `consul operator autopilot`
 
 The Autopilot operator command is used to interact with Consul's Autopilot subsystem. The
 command can be used to view or modify the current Autopilot configuration. See the
-[Autopilot Guide](/docs/guides/autopilot.html) for more information about Autopilot.
+[Autopilot Guide](https://learn.hashicorp.com/consul/day-2-operations/autopilot) for more information about Autopilot.
 
 ```text
 Usage: consul operator autopilot <subcommand> [options]
@@ -70,6 +70,9 @@ from the leader before being considered unhealthy. Must be a duration value such
 
 * `-max-trailing-logs` - Controls the maximum number of log entries that a server can trail
 the leader by before being considered unhealthy.
+
+* `-min-quorum` - Sets the minimum number of servers required in a cluster
+before autopilot is allowed to prune dead servers.
 
 * `-server-stabilization-time` - Controls the minimum amount of time a server must be stable in
 the 'healthy' state before being added to the cluster. Only takes effect if all servers are

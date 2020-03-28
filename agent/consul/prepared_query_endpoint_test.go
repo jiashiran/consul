@@ -3,7 +3,6 @@ package consul
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"net/rpc"
 	"os"
 	"reflect"
@@ -14,11 +13,13 @@ import (
 
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/structs"
+	tokenStore "github.com/hashicorp/consul/agent/token"
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/consul/testrpc"
-	"github.com/hashicorp/consul/testutil/retry"
 	"github.com/hashicorp/consul/types"
-	"github.com/hashicorp/net-rpc-msgpackrpc"
+	"github.com/hashicorp/go-hclog"
+	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
 	"github.com/hashicorp/serf/coordinate"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +78,7 @@ func TestPreparedQuery_Apply(t *testing.T) {
 	query.Query.Service.Failover.NearestN = 0
 	query.Query.Session = "nope"
 	err = msgpackrpc.CallWithCodec(codec, "PreparedQuery.Apply", &query, &reply)
-	if err == nil || !strings.Contains(err.Error(), "failed session lookup") {
+	if err == nil || !strings.Contains(err.Error(), "invalid session") {
 		t.Fatalf("bad: %v", err)
 	}
 
@@ -188,6 +189,7 @@ func TestPreparedQuery_Apply_ACLDeny(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -212,7 +214,7 @@ func TestPreparedQuery_Apply_ACLDeny(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -627,6 +629,7 @@ func TestPreparedQuery_ACLDeny_Catchall_Template(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -651,7 +654,7 @@ func TestPreparedQuery_ACLDeny_Catchall_Template(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -841,6 +844,7 @@ func TestPreparedQuery_Get(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -849,7 +853,7 @@ func TestPreparedQuery_Get(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	// Create an ACL with write permissions for redis queries.
 	var token string
@@ -865,7 +869,7 @@ func TestPreparedQuery_Get(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -1093,6 +1097,7 @@ func TestPreparedQuery_List(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -1101,7 +1106,7 @@ func TestPreparedQuery_List(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	// Create an ACL with write permissions for redis queries.
 	var token string
@@ -1117,7 +1122,7 @@ func TestPreparedQuery_List(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -1300,6 +1305,7 @@ func TestPreparedQuery_Explain(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -1324,7 +1330,7 @@ func TestPreparedQuery_Explain(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -1436,6 +1442,7 @@ func TestPreparedQuery_Execute(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 		c.ACLEnforceVersion8 = false
@@ -1448,12 +1455,14 @@ func TestPreparedQuery_Execute(t *testing.T) {
 	dir2, s2 := testServerWithConfig(t, func(c *Config) {
 		c.Datacenter = "dc2"
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 	})
 	defer os.RemoveAll(dir2)
 	defer s2.Shutdown()
 	codec2 := rpcClient(t, s2)
 	defer codec2.Close()
 
+	s2.tokens.UpdateReplicationToken("root", tokenStore.TokenSourceConfig)
 	testrpc.WaitForLeader(t, s1.RPC, "dc1")
 	testrpc.WaitForLeader(t, s2.RPC, "dc2")
 
@@ -1479,7 +1488,7 @@ func TestPreparedQuery_Execute(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -1505,11 +1514,16 @@ func TestPreparedQuery_Execute(t *testing.T) {
 						Service: "foo",
 						Port:    8000,
 						Tags:    []string{dc, fmt.Sprintf("tag%d", i+1)},
+						Meta: map[string]string{
+							"svc-group": fmt.Sprintf("%d", i%2),
+							"foo":       "true",
+						},
 					},
 					WriteRequest: structs.WriteRequest{Token: "root"},
 				}
 				if i == 0 {
 					req.NodeMeta["unique"] = "true"
+					req.Service.Meta["unique"] = "true"
 				}
 
 				var codec rpc.ClientCodec
@@ -1610,7 +1624,7 @@ func TestPreparedQuery_Execute(t *testing.T) {
 	}
 
 	// Run various service queries with node metadata filters.
-	if false {
+	{
 		cases := []struct {
 			filters  map[string]string
 			numNodes int
@@ -1671,6 +1685,67 @@ func TestPreparedQuery_Execute(t *testing.T) {
 				if !structs.SatisfiesMetaFilters(node.Node.Meta, tc.filters) {
 					t.Fatalf("bad: %v", node.Node.Meta)
 				}
+			}
+		}
+	}
+
+	// Run various service queries with service metadata filters
+	{
+		cases := []struct {
+			filters  map[string]string
+			numNodes int
+		}{
+			{
+				filters:  map[string]string{},
+				numNodes: 10,
+			},
+			{
+				filters:  map[string]string{"foo": "true"},
+				numNodes: 10,
+			},
+			{
+				filters:  map[string]string{"svc-group": "0"},
+				numNodes: 5,
+			},
+			{
+				filters:  map[string]string{"svc-group": "1"},
+				numNodes: 5,
+			},
+			{
+				filters:  map[string]string{"svc-group": "0", "unique": "true"},
+				numNodes: 1,
+			},
+		}
+
+		for _, tc := range cases {
+			svcMetaQuery := structs.PreparedQueryRequest{
+				Datacenter: "dc1",
+				Op:         structs.PreparedQueryCreate,
+				Query: &structs.PreparedQuery{
+					Service: structs.ServiceQuery{
+						Service:     "foo",
+						ServiceMeta: tc.filters,
+					},
+					DNS: structs.QueryDNSOptions{
+						TTL: "10s",
+					},
+				},
+				WriteRequest: structs.WriteRequest{Token: "root"},
+			}
+
+			require.NoError(t, msgpackrpc.CallWithCodec(codec1, "PreparedQuery.Apply", &svcMetaQuery, &svcMetaQuery.Query.ID))
+
+			req := structs.PreparedQueryExecuteRequest{
+				Datacenter:    "dc1",
+				QueryIDOrName: svcMetaQuery.Query.ID,
+				QueryOptions:  structs.QueryOptions{Token: execToken},
+			}
+
+			var reply structs.PreparedQueryExecuteResponse
+			require.NoError(t, msgpackrpc.CallWithCodec(codec1, "PreparedQuery.Execute", &req, &reply))
+			require.Len(t, reply.Nodes, tc.numNodes)
+			for _, node := range reply.Nodes {
+				require.True(t, structs.SatisfiesMetaFilters(node.Service.Meta, tc.filters))
 			}
 		}
 	}
@@ -2163,7 +2238,7 @@ func TestPreparedQuery_Execute(t *testing.T) {
 			Op:         structs.ACLSet,
 			ACL: structs.ACL{
 				Name:  "User token",
-				Type:  structs.ACLTypeClient,
+				Type:  structs.ACLTokenTypeClient,
 				Rules: rules,
 			},
 			WriteRequest: structs.WriteRequest{Token: "root"},
@@ -2652,7 +2727,7 @@ func TestPreparedQuery_Execute_ConnectExact(t *testing.T) {
 		case 2:
 			// Connect proxy
 			req.Service.Kind = structs.ServiceKindConnectProxy
-			req.Service.ProxyDestination = req.Service.Service
+			req.Service.Proxy.DestinationServiceName = req.Service.Service
 			req.Service.Service = "proxy"
 		}
 
@@ -2727,7 +2802,7 @@ func TestPreparedQuery_Execute_ConnectExact(t *testing.T) {
 		require.Equal(reply.Service, reply.Nodes[0].Service.Service)
 
 		require.Equal(structs.ServiceKindConnectProxy, reply.Nodes[1].Service.Kind)
-		require.Equal(reply.Service, reply.Nodes[1].Service.ProxyDestination)
+		require.Equal(reply.Service, reply.Nodes[1].Service.Proxy.DestinationServiceName)
 	}
 
 	// Update the query
@@ -2762,7 +2837,7 @@ func TestPreparedQuery_Execute_ConnectExact(t *testing.T) {
 		require.Equal(reply.Service, reply.Nodes[0].Service.Service)
 
 		require.Equal(structs.ServiceKindConnectProxy, reply.Nodes[1].Service.Kind)
-		require.Equal(reply.Service, reply.Nodes[1].Service.ProxyDestination)
+		require.Equal(reply.Service, reply.Nodes[1].Service.Proxy.DestinationServiceName)
 	}
 
 	// Unset the query
@@ -2867,6 +2942,7 @@ func TestPreparedQuery_Wrapper(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -2876,12 +2952,14 @@ func TestPreparedQuery_Wrapper(t *testing.T) {
 	dir2, s2 := testServerWithConfig(t, func(c *Config) {
 		c.Datacenter = "dc2"
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
 	defer os.RemoveAll(dir2)
 	defer s2.Shutdown()
 
+	s2.tokens.UpdateReplicationToken("root", tokenStore.TokenSourceConfig)
 	testrpc.WaitForLeader(t, s1.RPC, "dc1")
 	testrpc.WaitForLeader(t, s2.RPC, "dc2")
 
@@ -2890,10 +2968,10 @@ func TestPreparedQuery_Wrapper(t *testing.T) {
 
 	// Try all the operations on a real server via the wrapper.
 	wrapper := &queryServerWrapper{s1}
-	wrapper.GetLogger().Printf("[DEBUG] Test")
+	wrapper.GetLogger().Debug("Test")
 
 	ret, err := wrapper.GetOtherDatacentersByDistance()
-	wrapper.GetLogger().Println("Returned value: ", ret)
+	wrapper.GetLogger().Info("Returned value", "value", ret)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -2912,7 +2990,7 @@ type mockQueryServer struct {
 	DatacentersError error
 	QueryLog         []string
 	QueryFn          func(dc string, args interface{}, reply interface{}) error
-	Logger           *log.Logger
+	Logger           hclog.Logger
 	LogBuffer        *bytes.Buffer
 }
 
@@ -2920,10 +2998,15 @@ func (m *mockQueryServer) JoinQueryLog() string {
 	return strings.Join(m.QueryLog, "|")
 }
 
-func (m *mockQueryServer) GetLogger() *log.Logger {
+func (m *mockQueryServer) GetLogger() hclog.Logger {
 	if m.Logger == nil {
 		m.LogBuffer = new(bytes.Buffer)
-		m.Logger = log.New(m.LogBuffer, "", 0)
+
+		m.Logger = hclog.New(&hclog.LoggerOptions{
+			Name:   "mock_query",
+			Output: m.LogBuffer,
+			Level:  hclog.Debug,
+		})
 	}
 	return m.Logger
 }

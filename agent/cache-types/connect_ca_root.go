@@ -27,6 +27,10 @@ func (c *ConnectCARoot) Fetch(opts cache.FetchOptions, req cache.Request) (cache
 			"Internal cache failure: request wrong type: %T", req)
 	}
 
+	// Lightweight copy this object so that manipulating QueryOptions doesn't race.
+	dup := *reqReal
+	reqReal = &dup
+
 	// Set the minimum query index to our current index so we block
 	reqReal.QueryOptions.MinQueryIndex = opts.MinIndex
 	reqReal.QueryOptions.MaxQueryTime = opts.Timeout
@@ -40,4 +44,8 @@ func (c *ConnectCARoot) Fetch(opts cache.FetchOptions, req cache.Request) (cache
 	result.Value = &reply
 	result.Index = reply.QueryMeta.Index
 	return result, nil
+}
+
+func (c *ConnectCARoot) SupportsBlocking() bool {
+	return true
 }

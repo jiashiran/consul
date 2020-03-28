@@ -1,19 +1,14 @@
-export default function(visitable, attribute, collection, text, filter) {
+export default function(visitable, attribute, collection, text, filter, radiogroup) {
   return {
     visit: visitable('/:dc/services/:service'),
-    nodes: collection('[data-test-node]', {
-      name: attribute('data-test-node'),
+    externalSource: attribute('data-test-external-source', 'h1 span'),
+    instances: collection('#instances [data-test-tabular-row]', {
+      address: text('[data-test-address]'),
     }),
-    healthy: collection('[data-test-healthy] [data-test-node]', {
-      name: attribute('data-test-node'),
-      address: text('header strong'),
-      id: text('header em'),
-    }),
-    unhealthy: collection('[data-test-unhealthy] [data-test-node]', {
-      name: attribute('data-test-node'),
-      address: text('header strong'),
-      id: text('header em'),
-    }),
+    dashboardAnchor: {
+      href: attribute('href', '[data-test-dashboard-anchor]'),
+    },
+    tabs: radiogroup('tab', ['instances', 'routing', 'tags']),
     filter: filter,
   };
 }

@@ -6,15 +6,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/hashicorp/consul/testrpc"
 
 	"github.com/hashicorp/consul/agent"
-	"github.com/hashicorp/consul/testutil"
-	"github.com/hashicorp/consul/testutil/retry"
-	"github.com/hashicorp/consul/version"
+	"github.com/hashicorp/consul/agent/config"
+	"github.com/hashicorp/consul/sdk/testutil"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/mitchellh/cli"
 )
 
@@ -82,55 +81,29 @@ func TestConfigFail(t *testing.T) {
 }
 
 func TestRetryJoin(t *testing.T) {
-	t.Parallel()
-	a := agent.NewTestAgent(t.Name(), "")
+	a := agent.NewTestAgent(t, t.Name(), "")
 	defer a.Shutdown()
+
+	b := agent.NewTestAgent(t, t.Name(), `
+		retry_join = ["`+a.Config.SerfBindAddrLAN.String()+`"]
+		retry_join_wan = ["`+a.Config.SerfBindAddrWAN.String()+`"]
+		retry_interval = "100ms"
+	`)
+	defer b.Shutdown()
+
 	testrpc.WaitForLeader(t, a.RPC, "dc1")
-
-	shutdownCh := make(chan struct{})
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		tmpDir := testutil.TempDir(t, "consul")
-		defer os.RemoveAll(tmpDir)
-
-		args := []string{
-			"-server",
-			"-bind", a.Config.BindAddr.String(),
-			"-data-dir", tmpDir,
-			"-node", "Node 11111111-1111-1111-1111-111111111111",
-			"-node-id", "11111111-1111-1111-1111-111111111111",
-			"-advertise", a.Config.BindAddr.String(),
-			"-retry-join", a.Config.SerfBindAddrLAN.String(),
-			"-retry-interval", "1s",
-			"-retry-join-wan", a.Config.SerfBindAddrWAN.String(),
-			"-retry-interval-wan", "1s",
-		}
-
-		ui := cli.NewMockUi()
-		cmd := New(ui, "", version.Version, "", "", shutdownCh)
-		// closing shutdownCh triggers a SIGINT which triggers shutdown without leave
-		// which will return 1
-		if code := cmd.Run(args); code != 1 {
-			t.Log(ui.ErrorWriter.String())
-			t.Fatalf("bad: %d", code)
-		}
-	}()
 
 	retry.Run(t, func(r *retry.R) {
 		if got, want := len(a.LANMembers()), 2; got != want {
 			r.Fatalf("got %d LAN members want %d", got, want)
 		}
+	})
+
+	retry.Run(t, func(r *retry.R) {
 		if got, want := len(a.WANMembers()), 2; got != want {
 			r.Fatalf("got %d WAN members want %d", got, want)
 		}
 	})
-
-	close(shutdownCh)
-	wg.Wait()
 }
 
 func TestRetryJoinFail(t *testing.T) {
@@ -230,5 +203,69 @@ func TestBadDataDirPermissions(t *testing.T) {
 	}
 	if out := ui.ErrorWriter.String(); !strings.Contains(out, "Permission denied") {
 		t.Fatalf("expected permission denied error, got: %s", out)
+	}
+}
+
+func TestReloadLoggerFail(t *testing.T) {
+	a := agent.NewTestAgent(t, t.Name(), "")
+	defer a.Shutdown()
+
+	ui := cli.NewMockUi()
+	cmd := New(ui, "", "", "", "", nil)
+
+	bindAddr := a.Config.BindAddr.String()
+	cmd.flagArgs.Config.BindAddr = &bindAddr
+	cmd.flagArgs.Config.DataDir = &a.Config.DataDir
+
+	cmd.logger = testutil.Logger(t)
+
+	newLogLevel := "BLAH"
+	cmd.flagArgs.Config.LogLevel = &newLogLevel
+
+	oldCfg := config.RuntimeConfig{
+		LogLevel: "INFO",
+	}
+	cfg, err := cmd.handleReload(a.Agent, &oldCfg)
+	if err == nil {
+		t.Fatal("Should fail with bad log level")
+	}
+
+	if !strings.Contains(err.Error(), "Invalid log level") {
+		t.Fatalf("expected invalid log level error, got: %s", err)
+	}
+	if cfg.LogLevel != "INFO" {
+		t.Fatalf("expected log level to stay the same, got: %s", cfg.LogLevel)
+	}
+}
+
+func TestReloadLoggerSuccess(t *testing.T) {
+	a := agent.NewTestAgent(t, t.Name(), "")
+	defer a.Shutdown()
+
+	ui := cli.NewMockUi()
+	cmd := New(ui, "", "", "", "", nil)
+
+	bindAddr := a.Config.BindAddr.String()
+	cmd.flagArgs.Config.BindAddr = &bindAddr
+	cmd.flagArgs.Config.DataDir = &a.Config.DataDir
+
+	cmd.logger = testutil.Logger(t)
+
+	newLogLevel := "ERROR"
+	cmd.flagArgs.Config.LogLevel = &newLogLevel
+
+	oldCfg := config.RuntimeConfig{
+		LogLevel: "INFO",
+	}
+	cfg, err := cmd.handleReload(a.Agent, &oldCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if cfg.LogLevel != "ERROR" {
+		t.Fatalf("expected log level to change to 'ERROR', got: %s", cfg.LogLevel)
+	}
+	if cmd.logger.IsWarn() || !cmd.logger.IsError() {
+		t.Fatal("expected logger level to change to 'ERROR'")
 	}
 }

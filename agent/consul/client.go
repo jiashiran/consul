@@ -3,7 +3,6 @@ package consul
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -15,6 +14,9 @@ import (
 	"github.com/hashicorp/consul/agent/router"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/lib"
+	"github.com/hashicorp/consul/logging"
+	"github.com/hashicorp/consul/tlsutil"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/serf/serf"
 	"golang.org/x/time/rate"
 )
@@ -48,6 +50,13 @@ const (
 type Client struct {
 	config *Config
 
+	// acls is used to resolve tokens to effective policies
+	acls *ACLResolver
+
+	// DEPRECATED (ACL-Legacy-Compat) - Only needed while we support both
+	// useNewACLs is a flag to indicate whether we are using the new ACL system
+	useNewACLs int32
+
 	// Connection pool to consul servers
 	connPool *pool.ConnPool
 
@@ -64,7 +73,7 @@ type Client struct {
 	eventCh chan serf.Event
 
 	// Logger uses the provided LogOutput
-	logger *log.Logger
+	logger hclog.InterceptLogger
 
 	// serf is the Serf cluster maintained inside the DC
 	// which contains all the DC nodes
@@ -76,15 +85,23 @@ type Client struct {
 
 	// embedded struct to hold all the enterprise specific data
 	EnterpriseClient
+
+	tlsConfigurator *tlsutil.Configurator
 }
 
-// NewClient is used to construct a new Consul client from the
-// configuration, potentially returning an error
+// NewClient is used to construct a new Consul client from the configuration,
+// potentially returning an error.
+// NewClient only used to help setting up a client for testing. Normal code
+// exercises NewClientLogger.
 func NewClient(config *Config) (*Client, error) {
-	return NewClientLogger(config, nil)
+	c, err := tlsutil.NewConfigurator(config.ToTLSUtilConfig(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientLogger(config, nil, c)
 }
 
-func NewClientLogger(config *Config, logger *log.Logger) (*Client, error) {
+func NewClientLogger(config *Config, logger hclog.InterceptLogger, tlsConfigurator *tlsutil.Configurator) (*Client, error) {
 	// Check the protocol version
 	if err := config.CheckProtocolVersion(); err != nil {
 		return nil, err
@@ -105,33 +122,31 @@ func NewClientLogger(config *Config, logger *log.Logger) (*Client, error) {
 		config.LogOutput = os.Stderr
 	}
 
-	// Create the tls Wrapper
-	tlsWrap, err := config.tlsConfig().OutgoingTLSWrapper()
-	if err != nil {
-		return nil, err
-	}
-
 	// Create a logger
 	if logger == nil {
-		logger = log.New(config.LogOutput, "", log.LstdFlags)
+		logger = hclog.NewInterceptLogger(&hclog.LoggerOptions{
+			Level:  hclog.Debug,
+			Output: config.LogOutput,
+		})
 	}
 
 	connPool := &pool.ConnPool{
-		SrcAddr:    config.RPCSrcAddr,
-		LogOutput:  config.LogOutput,
-		MaxTime:    clientRPCConnMaxIdle,
-		MaxStreams: clientMaxStreams,
-		TLSWrapper: tlsWrap,
-		ForceTLS:   config.VerifyOutgoing,
+		SrcAddr:         config.RPCSrcAddr,
+		LogOutput:       config.LogOutput,
+		MaxTime:         clientRPCConnMaxIdle,
+		MaxStreams:      clientMaxStreams,
+		TLSConfigurator: tlsConfigurator,
+		ForceTLS:        config.VerifyOutgoing,
 	}
 
 	// Create client
 	c := &Client{
-		config:     config,
-		connPool:   connPool,
-		eventCh:    make(chan serf.Event, serfEventBacklog),
-		logger:     logger,
-		shutdownCh: make(chan struct{}),
+		config:          config,
+		connPool:        connPool,
+		eventCh:         make(chan serf.Event, serfEventBacklog),
+		logger:          logger.NamedIntercept(logging.ConsulClient),
+		shutdownCh:      make(chan struct{}),
+		tlsConfigurator: tlsConfigurator,
 	}
 
 	c.rpcLimiter.Store(rate.NewLimiter(config.RPCRate, config.RPCMaxBurst))
@@ -141,12 +156,31 @@ func NewClientLogger(config *Config, logger *log.Logger) (*Client, error) {
 		return nil, err
 	}
 
+	c.useNewACLs = 0
+	aclConfig := ACLResolverConfig{
+		Config:      config,
+		Delegate:    c,
+		Logger:      c.logger,
+		AutoDisable: true,
+		CacheConfig: clientACLCacheConfig,
+		ACLConfig:   newACLConfig(c.logger),
+	}
+	var err error
+	if c.acls, err = NewACLResolver(&aclConfig); err != nil {
+		c.Shutdown()
+		return nil, fmt.Errorf("Failed to create ACL resolver: %v", err)
+	}
+
 	// Initialize the LAN Serf
 	c.serf, err = c.setupSerf(config.SerfLANConfig,
 		c.eventCh, serfLANSnapshot)
 	if err != nil {
 		c.Shutdown()
 		return nil, fmt.Errorf("Failed to start lan serf: %v", err)
+	}
+
+	if c.acls.ACLsEnabled() {
+		go c.monitorACLMode()
 	}
 
 	// Start maintenance task for servers
@@ -167,7 +201,7 @@ func NewClientLogger(config *Config, logger *log.Logger) (*Client, error) {
 
 // Shutdown is used to shutdown the client
 func (c *Client) Shutdown() error {
-	c.logger.Printf("[INFO] consul: shutting down client")
+	c.logger.Info("shutting down client")
 	c.shutdownLock.Lock()
 	defer c.shutdownLock.Unlock()
 
@@ -184,17 +218,20 @@ func (c *Client) Shutdown() error {
 
 	// Close the connection pool
 	c.connPool.Shutdown()
+
+	c.acls.Close()
+
 	return nil
 }
 
 // Leave is used to prepare for a graceful shutdown
 func (c *Client) Leave() error {
-	c.logger.Printf("[INFO] consul: client starting leave")
+	c.logger.Info("client starting leave")
 
 	// Leave the LAN pool
 	if c.serf != nil {
 		if err := c.serf.Leave(); err != nil {
-			c.logger.Printf("[ERR] consul: Failed to leave LAN Serf cluster: %v", err)
+			c.logger.Error("Failed to leave LAN Serf cluster", "error", err)
 		}
 	}
 	return nil
@@ -233,7 +270,10 @@ func (c *Client) LANSegmentMembers(segment string) ([]serf.Member, error) {
 }
 
 // RemoveFailedNode is used to remove a failed node from the cluster
-func (c *Client) RemoveFailedNode(node string) error {
+func (c *Client) RemoveFailedNode(node string, prune bool) error {
+	if prune {
+		return c.serf.RemoveFailedNodePrune(node)
+	}
 	return c.serf.RemoveFailedNode(node)
 }
 
@@ -277,7 +317,11 @@ TRY:
 	}
 
 	// Move off to another server, and see if we can retry.
-	c.logger.Printf("[ERR] consul: %q RPC failed to server %s: %v", method, server.Addr, rpcErr)
+	c.logger.Error("RPC failed to server",
+		"method", method,
+		"server", server.Addr,
+		"error", rpcErr,
+	)
 	metrics.IncrCounterWithLabels([]string{"client", "rpc", "failed"}, 1, []metrics.Label{{Name: "server", Value: server.Name}})
 	c.routers.NotifyFailedServer(server)
 	if retry := canRetry(args, rpcErr); !retry {
@@ -321,7 +365,7 @@ func (c *Client) SnapshotRPC(args *structs.SnapshotRequest, in io.Reader, out io
 	}
 	defer func() {
 		if err := snap.Close(); err != nil {
-			c.logger.Printf("[WARN] consul: Failed closing snapshot stream: %v", err)
+			c.logger.Error("Failed closing snapshot stream", "error", err)
 		}
 	}()
 
@@ -357,6 +401,16 @@ func (c *Client) Stats() map[string]map[string]string {
 		},
 		"serf_lan": c.serf.Stats(),
 		"runtime":  runtimeStats(),
+	}
+
+	if c.ACLsEnabled() {
+		if c.UseLegacyACLs() {
+			stats["consul"]["acl"] = "legacy"
+		} else {
+			stats["consul"]["acl"] = "enabled"
+		}
+	} else {
+		stats["consul"]["acl"] = "disabled"
 	}
 
 	for outerKey, outerValue := range c.enterpriseStats() {

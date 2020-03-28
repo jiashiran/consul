@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hashicorp/consul/testutil"
-	"github.com/hashicorp/consul/testutil/retry"
-	"github.com/pascaldekloe/goe/verify"
+	"github.com/hashicorp/consul/sdk/testutil"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,6 +34,27 @@ func TestAPI_HealthNode(t *testing.T) {
 			r.Fatalf("bad: %v", checks)
 		}
 	})
+}
+
+func TestAPI_HealthNode_Filter(t *testing.T) {
+	t.Parallel()
+	c, s := makeClient(t)
+	defer s.Stop()
+
+	// this sets up the catalog entries with things we can filter on
+	testNodeServiceCheckRegistrations(t, c, "dc1")
+
+	health := c.Health()
+
+	// filter for just the redis service checks
+	checks, _, err := health.Node("foo", &QueryOptions{Filter: "ServiceName == redis"})
+	require.NoError(t, err)
+	require.Len(t, checks, 2)
+
+	// filter out service checks
+	checks, _, err = health.Node("foo", &QueryOptions{Filter: "ServiceID == ``"})
+	require.NoError(t, err)
+	require.Len(t, checks, 2)
 }
 
 func TestAPI_HealthChecks_AggregatedStatus(t *testing.T) {
@@ -203,6 +223,8 @@ func TestAPI_HealthChecks(t *testing.T) {
 				ServiceID:   "foo",
 				ServiceName: "foo",
 				ServiceTags: []string{"bar"},
+				Type:        "ttl",
+				Namespace:   defaultNamespace,
 			},
 		}
 
@@ -213,9 +235,9 @@ func TestAPI_HealthChecks(t *testing.T) {
 		if meta.LastIndex == 0 {
 			r.Fatalf("bad: %v", meta)
 		}
-		if got, want := out, checks; !verify.Values(t, "checks", got, want) {
-			r.Fatal("health.Checks failed")
-		}
+		checks[0].CreateIndex = out[0].CreateIndex
+		checks[0].ModifyIndex = out[0].ModifyIndex
+		require.Equal(r, checks, out)
 	})
 }
 
@@ -229,6 +251,8 @@ func TestAPI_HealthChecks_NodeMetaFilter(t *testing.T) {
 
 	agent := c.Agent()
 	health := c.Health()
+
+	s.WaitForSerfCheck(t)
 
 	// Make a service with a check
 	reg := &AgentServiceRegistration{
@@ -250,10 +274,39 @@ func TestAPI_HealthChecks_NodeMetaFilter(t *testing.T) {
 		if meta.LastIndex == 0 {
 			r.Fatalf("bad: %v", meta)
 		}
-		if len(checks) == 0 {
-			r.Fatalf("Bad: %v", checks)
+		if len(checks) != 1 {
+			r.Fatalf("expected 1 check, got %d", len(checks))
+		}
+		if checks[0].Type != "ttl" {
+			r.Fatalf("expected type ttl, got %s", checks[0].Type)
 		}
 	})
+}
+
+func TestAPI_HealthChecks_Filter(t *testing.T) {
+	t.Parallel()
+	c, s := makeClient(t)
+	defer s.Stop()
+
+	// this sets up the catalog entries with things we can filter on
+	testNodeServiceCheckRegistrations(t, c, "dc1")
+
+	health := c.Health()
+
+	checks, _, err := health.Checks("redis", &QueryOptions{Filter: "Node == foo"})
+	require.NoError(t, err)
+	// 1 service check for each instance
+	require.Len(t, checks, 2)
+
+	checks, _, err = health.Checks("redis", &QueryOptions{Filter: "Node == bar"})
+	require.NoError(t, err)
+	// 1 service check for each instance
+	require.Len(t, checks, 1)
+
+	checks, _, err = health.Checks("redis", &QueryOptions{Filter: "Node == foo and v1 in ServiceTags"})
+	require.NoError(t, err)
+	// 1 service check for the matching instance
+	require.Len(t, checks, 1)
 }
 
 func TestAPI_HealthService(t *testing.T) {
@@ -283,6 +336,141 @@ func TestAPI_HealthService(t *testing.T) {
 	})
 }
 
+func TestAPI_HealthService_SingleTag(t *testing.T) {
+	t.Parallel()
+	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
+		conf.NodeName = "node123"
+	})
+	defer s.Stop()
+	agent := c.Agent()
+	health := c.Health()
+	reg := &AgentServiceRegistration{
+		Name: "foo",
+		ID:   "foo1",
+		Tags: []string{"bar"},
+		Check: &AgentServiceCheck{
+			Status: HealthPassing,
+			TTL:    "15s",
+		},
+	}
+	require.NoError(t, agent.ServiceRegister(reg))
+	defer agent.ServiceDeregister("foo1")
+	retry.Run(t, func(r *retry.R) {
+		services, meta, err := health.Service("foo", "bar", true, nil)
+		require.NoError(r, err)
+		require.NotEqual(r, meta.LastIndex, 0)
+		require.Len(r, services, 1)
+		require.Equal(r, services[0].Service.ID, "foo1")
+
+		for _, check := range services[0].Checks {
+			if check.CheckID == "service:foo1" && check.Type != "ttl" {
+				r.Fatalf("expected type ttl, got %s", check.Type)
+			}
+		}
+	})
+}
+func TestAPI_HealthService_MultipleTags(t *testing.T) {
+	t.Parallel()
+	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
+		conf.NodeName = "node123"
+	})
+	defer s.Stop()
+
+	agent := c.Agent()
+	health := c.Health()
+
+	// Make two services with a check
+	reg := &AgentServiceRegistration{
+		Name: "foo",
+		ID:   "foo1",
+		Tags: []string{"bar"},
+		Check: &AgentServiceCheck{
+			Status: HealthPassing,
+			TTL:    "15s",
+		},
+	}
+	require.NoError(t, agent.ServiceRegister(reg))
+	defer agent.ServiceDeregister("foo1")
+
+	reg2 := &AgentServiceRegistration{
+		Name: "foo",
+		ID:   "foo2",
+		Tags: []string{"bar", "v2"},
+		Check: &AgentServiceCheck{
+			Status: HealthPassing,
+			TTL:    "15s",
+		},
+	}
+	require.NoError(t, agent.ServiceRegister(reg2))
+	defer agent.ServiceDeregister("foo2")
+
+	// Test searching with one tag (two results)
+	retry.Run(t, func(r *retry.R) {
+		services, meta, err := health.ServiceMultipleTags("foo", []string{"bar"}, true, nil)
+
+		require.NoError(r, err)
+		require.NotEqual(r, meta.LastIndex, 0)
+		require.Len(r, services, 2)
+	})
+
+	// Test searching with two tags (one result)
+	retry.Run(t, func(r *retry.R) {
+		services, meta, err := health.ServiceMultipleTags("foo", []string{"bar", "v2"}, true, nil)
+
+		require.NoError(r, err)
+		require.NotEqual(r, meta.LastIndex, 0)
+		require.Len(r, services, 1)
+		require.Equal(r, services[0].Service.ID, "foo2")
+	})
+}
+
+func TestAPI_HealthService_NodeMetaFilter(t *testing.T) {
+	t.Parallel()
+	meta := map[string]string{"somekey": "somevalue"}
+	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
+		conf.NodeMeta = meta
+	})
+	defer s.Stop()
+
+	s.WaitForSerfCheck(t)
+
+	health := c.Health()
+	retry.Run(t, func(r *retry.R) {
+		// consul service should always exist...
+		checks, meta, err := health.Service("consul", "", true, &QueryOptions{NodeMeta: meta})
+		require.NoError(r, err)
+		require.NotEqual(r, meta.LastIndex, 0)
+		require.NotEqual(r, len(checks), 0)
+		require.Equal(r, checks[0].Node.Datacenter, "dc1")
+		require.Contains(r, checks[0].Node.TaggedAddresses, "wan")
+	})
+}
+
+func TestAPI_HealthService_Filter(t *testing.T) {
+	t.Parallel()
+	c, s := makeClient(t)
+	defer s.Stop()
+
+	// this sets up the catalog entries with things we can filter on
+	testNodeServiceCheckRegistrations(t, c, "dc1")
+
+	health := c.Health()
+
+	services, _, err := health.Service("redis", "", false, &QueryOptions{Filter: "Service.Meta.version == 2"})
+	require.NoError(t, err)
+	require.Len(t, services, 1)
+
+	services, _, err = health.Service("web", "", false, &QueryOptions{Filter: "Node.Meta.os == linux"})
+	require.NoError(t, err)
+	require.Len(t, services, 2)
+	require.Equal(t, "baz", services[0].Node.Node)
+	require.Equal(t, "baz", services[1].Node.Node)
+
+	services, _, err = health.Service("web", "", false, &QueryOptions{Filter: "Node.Meta.os == linux and Service.Meta.version == 1"})
+	require.NoError(t, err)
+	require.Len(t, services, 1)
+}
+
 func TestAPI_HealthConnect(t *testing.T) {
 	t.Parallel()
 	c, s := makeClient(t)
@@ -290,6 +478,8 @@ func TestAPI_HealthConnect(t *testing.T) {
 
 	agent := c.Agent()
 	health := c.Health()
+
+	s.WaitForSerfCheck(t)
 
 	// Make a service with a proxy
 	reg := &AgentServiceRegistration{
@@ -302,10 +492,12 @@ func TestAPI_HealthConnect(t *testing.T) {
 
 	// Register the proxy
 	proxyReg := &AgentServiceRegistration{
-		Name:             "foo-proxy",
-		Port:             8001,
-		Kind:             ServiceKindConnectProxy,
-		ProxyDestination: "foo",
+		Name: "foo-proxy",
+		Port: 8001,
+		Kind: ServiceKindConnectProxy,
+		Proxy: &AgentServiceConnectProxyConfig{
+			DestinationServiceName: "foo",
+		},
 	}
 	err = agent.ServiceRegister(proxyReg)
 	require.NoError(t, err)
@@ -333,34 +525,25 @@ func TestAPI_HealthConnect(t *testing.T) {
 	})
 }
 
-func TestAPI_HealthService_NodeMetaFilter(t *testing.T) {
+func TestAPI_HealthConnect_Filter(t *testing.T) {
 	t.Parallel()
-	meta := map[string]string{"somekey": "somevalue"}
-	c, s := makeClientWithConfig(t, nil, func(conf *testutil.TestServerConfig) {
-		conf.NodeMeta = meta
-	})
+	c, s := makeClient(t)
 	defer s.Stop()
 
+	// this sets up the catalog entries with things we can filter on
+	testNodeServiceCheckRegistrations(t, c, "dc1")
+
 	health := c.Health()
-	retry.Run(t, func(r *retry.R) {
-		// consul service should always exist...
-		checks, meta, err := health.Service("consul", "", true, &QueryOptions{NodeMeta: meta})
-		if err != nil {
-			r.Fatal(err)
-		}
-		if meta.LastIndex == 0 {
-			r.Fatalf("bad: %v", meta)
-		}
-		if len(checks) == 0 {
-			r.Fatalf("Bad: %v", checks)
-		}
-		if _, ok := checks[0].Node.TaggedAddresses["wan"]; !ok {
-			r.Fatalf("Bad: %v", checks[0].Node)
-		}
-		if checks[0].Node.Datacenter != "dc1" {
-			r.Fatalf("Bad datacenter: %v", checks[0].Node)
-		}
-	})
+
+	services, _, err := health.Connect("web", "", false, &QueryOptions{Filter: "Node.Meta.os == linux"})
+	require.NoError(t, err)
+	require.Len(t, services, 2)
+	require.Equal(t, "baz", services[0].Node.Node)
+	require.Equal(t, "baz", services[1].Node.Node)
+
+	services, _, err = health.Service("web", "", false, &QueryOptions{Filter: "Node.Meta.os == linux and Service.Meta.version == 1"})
+	require.NoError(t, err)
+	require.Len(t, services, 1)
 }
 
 func TestAPI_HealthState(t *testing.T) {
@@ -404,4 +587,31 @@ func TestAPI_HealthState_NodeMetaFilter(t *testing.T) {
 			r.Fatalf("Bad: %v", checks)
 		}
 	})
+}
+
+func TestAPI_HealthState_Filter(t *testing.T) {
+	t.Parallel()
+	c, s := makeClient(t)
+	defer s.Stop()
+
+	// this sets up the catalog entries with things we can filter on
+	testNodeServiceCheckRegistrations(t, c, "dc1")
+
+	health := c.Health()
+
+	checks, _, err := health.State(HealthAny, &QueryOptions{Filter: "Node == baz"})
+	require.NoError(t, err)
+	require.Len(t, checks, 6)
+
+	checks, _, err = health.State(HealthAny, &QueryOptions{Filter: "Status == warning or Status == critical"})
+	require.NoError(t, err)
+	require.Len(t, checks, 2)
+
+	checks, _, err = health.State(HealthCritical, &QueryOptions{Filter: "Node == baz"})
+	require.NoError(t, err)
+	require.Len(t, checks, 1)
+
+	checks, _, err = health.State(HealthWarning, &QueryOptions{Filter: "Node == baz"})
+	require.NoError(t, err)
+	require.Len(t, checks, 1)
 }

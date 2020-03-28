@@ -1,17 +1,14 @@
-import getAPI from '@hashicorp/ember-cli-api-double';
+import config from 'consul-ui/config/environment';
+
+import apiDouble from '@hashicorp/ember-cli-api-double';
 import setCookies from 'consul-ui/tests/helpers/set-cookies';
 import typeToURL from 'consul-ui/tests/helpers/type-to-url';
-import config from 'consul-ui/config/environment';
-const apiConfig = config['ember-cli-api-double'];
-let path = '/consul-api-double';
-let reader;
-if (apiConfig) {
-  const temp = apiConfig.endpoints[0].split('/');
-  reader = apiConfig.reader;
-  temp.pop();
-  path = temp.join('/');
-}
-const api = getAPI(path, setCookies, typeToURL, reader);
+
+const addon = config['@hashicorp/ember-cli-api-double'];
+const temp = addon.endpoints[0].split('/');
+temp.pop();
+const path = temp.join('/');
+const api = apiDouble(path, setCookies, typeToURL);
 export const get = function(_url, options = { headers: { cookie: {} } }) {
   const url = new URL(_url, 'http://localhost');
   return new Promise(function(resolve) {
@@ -21,6 +18,7 @@ export const get = function(_url, options = { headers: { cookie: {} } }) {
         path: url.pathname,
         url: url.href,
         cookies: options.headers.cookie || {},
+        headers: {},
         query: [...url.searchParams.keys()].reduce(function(prev, key) {
           prev[key] = url.searchParams.get(key);
           return prev;
@@ -28,6 +26,9 @@ export const get = function(_url, options = { headers: { cookie: {} } }) {
       },
       {
         set: function() {},
+        status: function() {
+          return this;
+        },
         send: function(content) {
           resolve(JSON.parse(content));
         },

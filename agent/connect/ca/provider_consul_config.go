@@ -2,20 +2,17 @@ package ca
 
 import (
 	"fmt"
-	"reflect"
 	"time"
 
+	"github.com/hashicorp/consul/agent/connect"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/mitchellh/mapstructure"
 )
 
 func ParseConsulCAConfig(raw map[string]interface{}) (*structs.ConsulCAProviderConfig, error) {
-	config := structs.ConsulCAProviderConfig{
-		CommonCAProviderConfig: defaultCommonConfig(),
-	}
-
+	config := defaultConsulCAProviderConfig()
 	decodeConf := &mapstructure.DecoderConfig{
-		DecodeHook:       ParseDurationFunc(),
+		DecodeHook:       structs.ParseDurationFunc(),
 		Result:           &config,
 		WeaklyTypedInput: true,
 	}
@@ -37,53 +34,23 @@ func ParseConsulCAConfig(raw map[string]interface{}) (*structs.ConsulCAProviderC
 		return nil, err
 	}
 
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
 }
 
-// ParseDurationFunc is a mapstructure hook for decoding a string or
-// []uint8 into a time.Duration value.
-func ParseDurationFunc() mapstructure.DecodeHookFunc {
-	return func(
-		f reflect.Type,
-		t reflect.Type,
-		data interface{}) (interface{}, error) {
-		var v time.Duration
-		if t != reflect.TypeOf(v) {
-			return data, nil
-		}
-
-		switch {
-		case f.Kind() == reflect.String:
-			if dur, err := time.ParseDuration(data.(string)); err != nil {
-				return nil, err
-			} else {
-				v = dur
-			}
-			return v, nil
-		case f == reflect.SliceOf(reflect.TypeOf(uint8(0))):
-			s := Uint8ToString(data.([]uint8))
-			if dur, err := time.ParseDuration(s); err != nil {
-				return nil, err
-			} else {
-				v = dur
-			}
-			return v, nil
-		default:
-			return data, nil
-		}
+func defaultConsulCAProviderConfig() structs.ConsulCAProviderConfig {
+	return structs.ConsulCAProviderConfig{
+		CommonCAProviderConfig: defaultCommonConfig(),
+		IntermediateCertTTL:    24 * 365 * time.Hour,
 	}
 }
-
-func Uint8ToString(bs []uint8) string {
-	b := make([]byte, len(bs))
-	for i, v := range bs {
-		b[i] = byte(v)
-	}
-	return string(b)
-}
-
 func defaultCommonConfig() structs.CommonCAProviderConfig {
 	return structs.CommonCAProviderConfig{
-		LeafCertTTL: 3 * 24 * time.Hour,
+		LeafCertTTL:    3 * 24 * time.Hour,
+		PrivateKeyType: connect.DefaultPrivateKeyType,
+		PrivateKeyBits: connect.DefaultPrivateKeyBits,
 	}
 }

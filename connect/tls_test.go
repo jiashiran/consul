@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"testing"
 
+	"github.com/hashicorp/consul/sdk/testutil"
 	"github.com/hashicorp/consul/testrpc"
 
 	"github.com/hashicorp/consul/agent"
@@ -27,6 +28,14 @@ func Test_verifyServerCertMatchesURI(t *testing.T) {
 			name:     "simple match",
 			certs:    TestPeerCertificates(t, "web", ca1),
 			expected: connect.TestSpiffeIDService(t, "web"),
+			wantErr:  false,
+		},
+		{
+			// Could happen during migration of secondary DC to multi-DC. Trust domain
+			// validity is enforced with x509 name constraints where needed.
+			name:     "different trust-domain allowed",
+			certs:    TestPeerCertificates(t, "web", ca1),
+			expected: connect.TestSpiffeIDServiceWithHost(t, "web", "other.consul"),
 			wantErr:  false,
 		},
 		{
@@ -143,7 +152,7 @@ func TestServerSideVerifier(t *testing.T) {
 	apiCA2 := testCertPEMBlock(t, apiCA2PEM)
 
 	// Setup a local test agent to query
-	agent := agent.NewTestAgent("test-consul", "")
+	agent := agent.NewTestAgent(t, "test-consul", "")
 	defer agent.Shutdown()
 	testrpc.WaitForTestAgent(t, agent.RPC, "dc1")
 
@@ -233,7 +242,7 @@ func TestServerSideVerifier(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			v := newServerSideVerifier(client, tt.service)
+			v := newServerSideVerifier(testutil.Logger(t), client, tt.service)
 			err := v(tt.tlsCfg, tt.rawCerts)
 			if tt.wantErr == "" {
 				require.Nil(t, err)

@@ -1,7 +1,6 @@
 package connect
 
 import (
-	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,6 +34,17 @@ var testCertURICases = []struct {
 	},
 
 	{
+		"basic agent ID",
+		"spiffe://1234.consul/agent/client/dc/dc1/id/uuid",
+		&SpiffeIDAgent{
+			Host:       "1234.consul",
+			Datacenter: "dc1",
+			Agent:      "uuid",
+		},
+		"",
+	},
+
+	{
 		"service with URL-encoded values",
 		"spiffe://1234.consul/ns/foo%2Fbar/dc/bar%2Fbaz/svc/baz%2Fqux",
 		&SpiffeIDService{
@@ -57,17 +67,13 @@ var testCertURICases = []struct {
 	},
 }
 
-func TestParseCertURI(t *testing.T) {
+func TestParseCertURIFromString(t *testing.T) {
 	for _, tc := range testCertURICases {
 		t.Run(tc.Name, func(t *testing.T) {
 			assert := assert.New(t)
 
-			// Parse the URI, should always be valid
-			uri, err := url.Parse(tc.URI)
-			assert.Nil(err)
-
 			// Parse the ID and check the error/return value
-			actual, err := ParseCertURI(uri)
+			actual, err := ParseCertURIFromString(tc.URI)
 			if err != nil {
 				t.Logf("parse error: %s", err.Error())
 			}

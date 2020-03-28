@@ -1,7 +1,6 @@
 package config
 
 import (
-	"crypto/tls"
 	"fmt"
 	"net"
 	"reflect"
@@ -16,19 +15,19 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type RuntimeSOAConfig struct {
+	Refresh uint32 // 3600 by default
+	Retry   uint32 // 600
+	Expire  uint32 // 86400
+	Minttl  uint32 // 0,
+}
+
 // RuntimeConfig specifies the configuration the consul agent actually
 // uses. Is is derived from one or more Config structures which can come
 // from files, flags and/or environment variables.
 type RuntimeConfig struct {
 	// non-user configurable values
 	AEInterval time.Duration
-
-	// ACLDisabledTTL is used by clients to determine how long they will
-	// wait to check again with the servers if they discover ACLs are not
-	// enabled. (not user configurable)
-	//
-	// hcl: acl_disabled_ttl = "duration"
-	ACLDisabledTTL time.Duration
 
 	CheckDeregisterIntervalMin time.Duration
 	CheckReapInterval          time.Duration
@@ -49,18 +48,30 @@ type RuntimeConfig struct {
 	ConsulRaftLeaderLeaseTimeout     time.Duration
 	ConsulServerHealthInterval       time.Duration
 
+	// ACLDisabledTTL is used by agents to determine how long they will
+	// wait to check again with the servers if they discover ACLs are not
+	// enabled. (not user configurable)
+	//
+	// hcl: acl.disabled_ttl = "duration"
+	ACLDisabledTTL time.Duration
+
+	// ACLsEnabled is used to determine whether ACLs should be enabled
+	//
+	// hcl: acl.enabled = boolean
+	ACLsEnabled bool
+
 	// ACLAgentMasterToken is a special token that has full read and write
 	// privileges for this agent, and can be used to call agent endpoints
 	// when no servers are available.
 	//
-	// hcl: acl_agent_master_token = string
+	// hcl: acl.tokens.agent_master = string
 	ACLAgentMasterToken string
 
 	// ACLAgentToken is the default token used to make requests for the agent
 	// itself, such as for registering itself with the catalog. If not
 	// configured, the 'acl_token' will be used.
 	//
-	// hcl: acl_agent_token = string
+	// hcl: acl.tokens.agent = string
 	ACLAgentToken string
 
 	// ACLDatacenter is the central datacenter that holds authoritative
@@ -75,7 +86,7 @@ type RuntimeConfig struct {
 	// ACLs are used to black-list, or "deny" which means ACLs are
 	// white-lists.
 	//
-	// hcl: acl_default_policy = ("allow"|"deny")
+	// hcl: acl.default_policy = ("allow"|"deny")
 	ACLDefaultPolicy string
 
 	// ACLDownPolicy is used to control the ACL interaction when we cannot
@@ -87,12 +98,13 @@ type RuntimeConfig struct {
 	//                    ACL's to be used to service requests. This
 	//                    is the default. If the ACL is not in the cache,
 	//                    this acts like deny.
-	//   * async-cache - Same behaviour as extend-cache, but perform ACL
+	//   * async-cache - Same behavior as extend-cache, but perform ACL
 	//                   Lookups asynchronously when cache TTL is expired.
 	//
-	// hcl: acl_down_policy = ("allow"|"deny"|"extend-cache"|"async-cache")
+	// hcl: acl.down_policy = ("allow"|"deny"|"extend-cache"|"async-cache")
 	ACLDownPolicy string
 
+	// DEPRECATED (ACL-Legacy-Compat)
 	// ACLEnforceVersion8 is used to gate a set of ACL policy features that
 	// are opt-in prior to Consul 0.8 and opt-out in Consul 0.8 and later.
 	//
@@ -105,35 +117,59 @@ type RuntimeConfig struct {
 	// See https://www.consul.io/docs/guides/acl.html#list-policy-for-keys for
 	// more details.
 	//
-	// hcl: acl_enable_key_list_policy = (true|false)
+	// hcl: acl.enable_key_list_policy = (true|false)
 	ACLEnableKeyListPolicy bool
 
 	// ACLMasterToken is used to bootstrap the ACL system. It should be specified
 	// on the servers in the ACLDatacenter. When the leader comes online, it ensures
 	// that the Master token is available. This provides the initial token.
 	//
-	// hcl: acl_master_token = string
+	// hcl: acl.tokens.master = string
 	ACLMasterToken string
 
-	// ACLReplicationToken is used to fetch ACLs from the ACLDatacenter in
-	// order to replicate them locally. Setting this to a non-empty value
-	// also enables replication. Replication is only available in datacenters
-	// other than the ACLDatacenter.
+	// ACLReplicationToken is used to replicate data locally from the
+	// PrimaryDatacenter. Replication is only available on servers in
+	// datacenters other than the PrimaryDatacenter
 	//
-	// hcl: acl_replication_token = string
+	// DEPRECATED (ACL-Legacy-Compat): Setting this to a non-empty value
+	// also enables legacy ACL replication if ACLs are enabled and in legacy mode.
+	//
+	// hcl: acl.tokens.replication = string
 	ACLReplicationToken string
 
-	// ACLTTL is used to control the time-to-live of cached ACLs . This has
+	// ACLtokenReplication is used to indicate that both tokens and policies
+	// should be replicated instead of just policies
+	//
+	// hcl: acl.token_replication = boolean
+	ACLTokenReplication bool
+
+	// ACLTokenTTL is used to control the time-to-live of cached ACL tokens. This has
 	// a major impact on performance. By default, it is set to 30 seconds.
 	//
-	// hcl: acl_ttl = "duration"
-	ACLTTL time.Duration
+	// hcl: acl.policy_ttl = "duration"
+	ACLTokenTTL time.Duration
+
+	// ACLPolicyTTL is used to control the time-to-live of cached ACL policies. This has
+	// a major impact on performance. By default, it is set to 30 seconds.
+	//
+	// hcl: acl.token_ttl = "duration"
+	ACLPolicyTTL time.Duration
+
+	// ACLRoleTTL is used to control the time-to-live of cached ACL roles. This has
+	// a major impact on performance. By default, it is set to 30 seconds.
+	//
+	// hcl: acl.role_ttl = "duration"
+	ACLRoleTTL time.Duration
 
 	// ACLToken is the default token used to make requests if a per-request
 	// token is not provided. If not configured the 'anonymous' token is used.
 	//
-	// hcl: acl_token = string
+	// hcl: acl.tokens.default = string
 	ACLToken string
+
+	// ACLEnableTokenPersistence determines whether or not tokens set via the agent HTTP API
+	// should be persisted to disk and reloaded when an agent restarts.
+	ACLEnableTokenPersistence bool
 
 	// AutopilotCleanupDeadServers enables the automatic cleanup of dead servers when new ones
 	// are added to the peer list. Defaults to true.
@@ -159,6 +195,12 @@ type RuntimeConfig struct {
 	//
 	// hcl: autopilot { max_trailing_logs = int }
 	AutopilotMaxTrailingLogs int
+
+	// AutopilotMinQuorum sets the minimum number of servers required in a cluster
+	// before autopilot can prune dead servers.
+	//
+	//hcl: autopilot { min_quorum = int }
+	AutopilotMinQuorum uint
 
 	// AutopilotRedundancyZoneTag is the Meta tag to use for separating servers
 	// into zones for redundancy. If left blank, this feature will be disabled.
@@ -222,6 +264,14 @@ type RuntimeConfig struct {
 	// hcl: domain = string
 	// flag: -domain string
 	DNSDomain string
+
+	// DNSAltDomain can be set to support resolution on an additional
+	// consul domain. Should end with a dot.
+	// If left blank, only the primary domain will be used.
+	//
+	// hcl: alt_domain = string
+	// flag: -alt-domain string
+	DNSAltDomain string
 
 	// DNSEnableTruncate is used to enable setting the truncate
 	// flag for UDP DNS queries.  This allows unmodified
@@ -289,11 +339,29 @@ type RuntimeConfig struct {
 	// flag: -recursor string [-recursor string]
 	DNSRecursors []string
 
+	// DNSUseCache whether or not to use cache for dns queries
+	//
+	// hcl: dns_config { use_cache = (true|false) }
+	DNSUseCache bool
+
+	// DNSUseCache whether or not to use cache for dns queries
+	//
+	// hcl: dns_config { cache_max_age = "duration" }
+	DNSCacheMaxAge time.Duration
+
 	// HTTPBlockEndpoints is a list of endpoint prefixes to block in the
 	// HTTP API. Any requests to these will get a 403 response.
 	//
 	// hcl: http_config { block_endpoints = []string }
 	HTTPBlockEndpoints []string
+
+	// AllowWriteHTTPFrom restricts the agent write endpoints to the given
+	// networks. Any request to a protected endpoint that is not mactched
+	// by one of these networks will get a 403 response.
+	// An empty slice means no restriction.
+	//
+	// hcl: http_config { allow_write_http_from = []string }
+	AllowWriteHTTPFrom []*net.IPNet
 
 	// HTTPResponseHeaders are used to add HTTP header response fields to the HTTP API responses.
 	//
@@ -313,7 +381,7 @@ type RuntimeConfig struct {
 	// flag: -datacenter string
 	Datacenter string
 
-	// Defines the maximum stale value for discovery path. Defauls to "0s".
+	// Defines the maximum stale value for discovery path. Defaults to "0s".
 	// Discovery paths are /v1/heath/ paths
 	//
 	// If not set to 0, it will try to perform stale read and perform only a
@@ -405,6 +473,11 @@ type RuntimeConfig struct {
 	// hcl: check_update_interval = "duration"
 	CheckUpdateInterval time.Duration
 
+	// Maximum size for the output of a healtcheck
+	// hcl check_output_max_size int
+	// flag: -check_output_max_size int
+	CheckOutputMaxSize int
+
 	// Checks contains the provided check definitions.
 	//
 	// hcl: checks = [
@@ -448,44 +521,47 @@ type RuntimeConfig struct {
 	// flag: -client string
 	ClientAddrs []*net.IPAddr
 
+	// ConfigEntryBootstrap contains a list of ConfigEntries to ensure are created
+	// If entries of the same Kind/Name exist already these will not update them.
+	ConfigEntryBootstrap []structs.ConfigEntry
+
+	// AutoEncryptTLS requires the client to acquire TLS certificates from
+	// servers.
+	AutoEncryptTLS bool
+
+	// Additional DNS SAN entries that clients request during auto_encrypt
+	// flow for their certificates.
+	AutoEncryptDNSSAN []string
+
+	// Additional IP SAN entries that clients request during auto_encrypt
+	// flow for their certificates.
+	AutoEncryptIPSAN []net.IP
+
+	// AutoEncryptAllowTLS enables the server to respond to
+	// AutoEncrypt.Sign requests.
+	AutoEncryptAllowTLS bool
+
 	// ConnectEnabled opts the agent into connect. It should be set on all clients
 	// and servers in a cluster for correct connect operation.
 	ConnectEnabled bool
 
-	// ConnectProxyBindMinPort is the inclusive start of the range of ports
-	// allocated to the agent for starting proxy listeners on where no explicit
-	// port is specified.
-	ConnectProxyBindMinPort int
+	// ConnectSidecarMinPort is the inclusive start of the range of ports
+	// allocated to the agent for asigning to sidecar services where no port is
+	// specified.
+	ConnectSidecarMinPort int
 
-	// ConnectProxyBindMaxPort is the inclusive end of the range of ports
-	// allocated to the agent for starting proxy listeners on where no explicit
-	// port is specified.
-	ConnectProxyBindMaxPort int
+	// ConnectSidecarMaxPort is the inclusive end of the range of ports
+	// allocated to the agent for asigning to sidecar services where no port is
+	// specified
+	ConnectSidecarMaxPort int
 
-	// ConnectProxyAllowManagedRoot is true if Consul can execute managed
-	// proxies when running as root (EUID == 0).
-	ConnectProxyAllowManagedRoot bool
+	// ExposeMinPort is the inclusive start of the range of ports
+	// allocated to the agent for exposing checks through a proxy
+	ExposeMinPort int
 
-	// ConnectProxyAllowManagedAPIRegistration enables managed proxy registration
-	// via the agent HTTP API. If this is false, only file configurations
-	// can be used.
-	ConnectProxyAllowManagedAPIRegistration bool
-
-	// ConnectProxyDefaultExecMode is used where a registration doesn't include an
-	// exec_mode. Defaults to daemon.
-	ConnectProxyDefaultExecMode string
-
-	// ConnectProxyDefaultDaemonCommand is used to start proxy in exec_mode =
-	// daemon if not specified at registration time.
-	ConnectProxyDefaultDaemonCommand []string
-
-	// ConnectProxyDefaultScriptCommand is used to start proxy in exec_mode =
-	// script if not specified at registration time.
-	ConnectProxyDefaultScriptCommand []string
-
-	// ConnectProxyDefaultConfig is merged with any config specified at
-	// registration time to allow global control of defaults.
-	ConnectProxyDefaultConfig map[string]interface{}
+	// ExposeMinPort is the inclusive start of the range of ports
+	// allocated to the agent for exposing checks through a proxy
+	ExposeMaxPort int
 
 	// ConnectCAProvider is the type of CA provider to use with Connect.
 	ConnectCAProvider string
@@ -493,15 +569,12 @@ type RuntimeConfig struct {
 	// ConnectCAConfig is the config to use for the CA provider.
 	ConnectCAConfig map[string]interface{}
 
-	// ConnectTestDisableManagedProxies is not exposed to public config but us
-	// used by TestAgent to prevent self-executing the test binary in the
-	// background if a managed proxy is created for a test. The only place we
-	// actually want to test processes really being spun up and managed is in
-	// `agent/proxy` and it does it at a lower level. Note that this still allows
-	// registering managed proxies via API and other methods, and still creates
-	// all the agent state for them, just doesn't actually start external
-	// processes up.
-	ConnectTestDisableManagedProxies bool
+	// ConnectTestCALeafRootChangeSpread is used to control how long the CA leaf
+	// cache with spread CSRs over when a root change occurs. For now we don't
+	// expose this in public config intentionally but could later with a rename.
+	// We only set this from during tests to effectively make CA rotation tests
+	// deterministic again.
+	ConnectTestCALeafRootChangeSpread time.Duration
 
 	// DNSAddrs contains the list of TCP and UDP addresses the DNS server will
 	// bind to. If the DNS endpoint is disabled (ports.dns <= 0) the list is
@@ -525,11 +598,23 @@ type RuntimeConfig struct {
 	// flags: -dns-port int
 	DNSPort int
 
+	// DNSSOA is the settings applied for DNS SOA
+	// hcl: soa {}
+	DNSSOA RuntimeSOAConfig
+
 	// DataDir is the path to the directory where the local state is stored.
 	//
 	// hcl: data_dir = string
 	// flag: -data-dir string
 	DataDir string
+
+	// DefaultQueryTime is the amount of time a blocking query will wait before
+	// Consul will force a response. This value can be overridden by the 'wait'
+	// query parameter.
+	//
+	// hcl: default_query_time = "duration"
+	// flag: -default-query-time string
+	DefaultQueryTime time.Duration
 
 	// DevMode enables a fast-path mode of operation to bring up an in-memory
 	// server with minimal configuration. Useful for developing Consul.
@@ -593,15 +678,6 @@ type RuntimeConfig struct {
 	// hcl: discard_check_output = (true|false)
 	DiscardCheckOutput bool
 
-	// EnableACLReplication is used to turn on ACL replication when using
-	// /v1/agent/token/acl_replication_token to introduce the token, instead
-	// of setting acl_replication_token in the config. Setting the token via
-	// config will also set this to true for backward compatibility.
-	//
-	// hcl: enable_acl_replication = (true|false)
-	// todo(fs): rename to ACLEnableReplication
-	EnableACLReplication bool
-
 	// EnableAgentTLSForChecks is used to apply the agent's TLS settings in
 	// order to configure the HTTP client used for health checks. Enabling
 	// this allows HTTP checks to present a client certificate and verify
@@ -609,18 +685,32 @@ type RuntimeConfig struct {
 	// and key).
 	EnableAgentTLSForChecks bool
 
+	// EnableCentralServiceConfig controls whether the agent should incorporate
+	// centralized config such as service-defaults into local service registrations.
+	//
+	// hcl: enable_central_service_config = (true|false)
+	EnableCentralServiceConfig bool
+
 	// EnableDebug is used to enable various debugging features.
 	//
 	// hcl: enable_debug = (true|false)
 	EnableDebug bool
 
-	// EnableScriptChecks controls whether health checks which execute
-	// scripts are enabled. This includes regular script checks and Docker
+	// EnableLocalScriptChecks controls whether health checks declared from the local
+	// config file which execute scripts are enabled. This includes regular script
+	// checks and Docker checks.
+	//
+	// hcl: (enable_script_checks|enable_local_script_checks) = (true|false)
+	// flag: -enable-script-checks, -enable-local-script-checks
+	EnableLocalScriptChecks bool
+
+	// EnableRemoeScriptChecks controls whether health checks declared from the http API
+	// which execute scripts are enabled. This includes regular script checks and Docker
 	// checks.
 	//
 	// hcl: enable_script_checks = (true|false)
 	// flag: -enable-script-checks
-	EnableScriptChecks bool
+	EnableRemoteScriptChecks bool
 
 	// EnableSyslog is used to also tee all the logs over to syslog. Only supported
 	// on linux and OSX. Other platforms will generate an error.
@@ -653,6 +743,28 @@ type RuntimeConfig struct {
 	//
 	// hcl: encrypt_verify_outgoing = (true|false)
 	EncryptVerifyOutgoing bool
+
+	// GRPCPort is the port the gRPC server listens on. Currently this only
+	// exposes the xDS and ext_authz APIs for Envoy and it is disabled by default.
+	//
+	// hcl: ports { grpc = int }
+	// flags: -grpc-port int
+	GRPCPort int
+
+	// GRPCAddrs contains the list of TCP addresses and UNIX sockets the gRPC
+	// server will bind to. If the gRPC endpoint is disabled (ports.grpc <= 0)
+	// the list is empty.
+	//
+	// The addresses are taken from 'addresses.grpc' which should contain a
+	// space separated list of ip addresses, UNIX socket paths and/or
+	// go-sockaddr templates. UNIX socket paths must be written as
+	// 'unix://<full path>', e.g. 'unix:///var/run/consul-grpc.sock'.
+	//
+	// If 'addresses.grpc' was not provided the 'client_addr' addresses are
+	// used.
+	//
+	// hcl: client_addr = string addresses { grpc = string } ports { grpc = int }
+	GRPCAddrs []net.Addr
 
 	// HTTPAddrs contains the list of TCP addresses and UNIX sockets the HTTP
 	// server will bind to. If the HTTP endpoint is disabled (ports.http <= 0)
@@ -691,10 +803,23 @@ type RuntimeConfig struct {
 	// hcl: client_addr = string addresses { https = string } ports { https = int }
 	HTTPSAddrs []net.Addr
 
+	// HTTPMaxConnsPerClient limits the number of concurrent TCP connections the
+	// HTTP(S) server will accept from any single source IP address.
+	//
+	// hcl: limits{ http_max_conns_per_client = 200 }
+	HTTPMaxConnsPerClient int
+
+	// HTTPSHandshakeTimeout is the time allowed for HTTPS client to complete the
+	// TLS handshake and send first bytes of the request.
+	//
+	// hcl: limits{ https_handshake_timeout = "5s" }
+	HTTPSHandshakeTimeout time.Duration
+
 	// HTTPSPort is the port the HTTP server listens on. The default is -1.
 	// Setting this to a value <= 0 disables the endpoint.
 	//
 	// hcl: ports { https = int }
+	// flags: -https-port int
 	HTTPSPort int
 
 	// KeyFile is used to provide a TLS key that is used for serving TLS
@@ -702,6 +827,12 @@ type RuntimeConfig struct {
 	//
 	// hcl: key_file = string
 	KeyFile string
+
+	// KVMaxValueSize controls the max allowed value size. If not set defaults
+	// to raft's suggested max value size.
+	//
+	// hcl: limits { kv_max_value_size = uint64 }
+	KVMaxValueSize uint64
 
 	// LeaveDrainTime is used to wait after a server has left the LAN Serf
 	// pool for RPCs to drain and new requests to be sent to other servers.
@@ -720,6 +851,12 @@ type RuntimeConfig struct {
 	// hcl: log_level = string
 	LogLevel string
 
+	// LogJSON controls whether to output logs as structured JSON. Defaults to false.
+	//
+	// hcl: log_json = (true|false)
+	// flag: -log-json
+	LogJSON bool
+
 	// LogFile is the path to the file where the logs get written to. Defaults to empty string.
 	//
 	// hcl: log_file = string
@@ -737,6 +874,20 @@ type RuntimeConfig struct {
 	// hcl: log_rotate_bytes = int
 	// flags: -log-rotate-bytes int
 	LogRotateBytes int
+
+	// LogRotateMaxFiles is the maximum number of log file archives to keep
+	//
+	// hcl: log_rotate_max_files = int
+	// flags: -log-rotate-max-files int
+	LogRotateMaxFiles int
+
+	// MaxQueryTime is the maximum amount of time a blocking query can wait
+	// before Consul will force a response. Consul applies jitter to the wait
+	// time. The jittered time will be capped to MaxQueryTime.
+	//
+	// hcl: max_query_time = "duration"
+	// flags: -max-query-time string
+	MaxQueryTime time.Duration
 
 	// Node ID is a unique ID for this node across space and time. Defaults
 	// to a randomly-generated ID that persists in the data-dir.
@@ -768,6 +919,13 @@ type RuntimeConfig struct {
 	// hcl: pid_file = string
 	PidFile string
 
+	// PrimaryDatacenter is the central datacenter that holds authoritative
+	// ACL records, replicates intentions and holds the root CA for Connect.
+	// This must be the same for the entire cluster. Off by default.
+	//
+	// hcl: primary_datacenter = string
+	PrimaryDatacenter string
+
 	// RPCAdvertiseAddr is the TCP address Consul advertises for its RPC endpoint.
 	// By default this is the bind address on the default RPC Server port. If the
 	// advertise address is specified then it is used.
@@ -780,6 +938,15 @@ type RuntimeConfig struct {
 	//
 	// hcl: bind_addr = string ports { server = int }
 	RPCBindAddr *net.TCPAddr
+
+	// RPCHandshakeTimeout is the timeout for reading the initial magic byte on a
+	// new RPC connection. If this is set high it may allow unauthenticated users
+	// to hold connections open arbitrarily long, even when mutual TLS is being
+	// enforced. It may be set to 0 explicitly to disable the timeout but this
+	// should never be used in production. Default is 5 seconds.
+	//
+	// hcl: limits { rpc_handshake_timeout = "duration" }
+	RPCHandshakeTimeout time.Duration
 
 	// RPCHoldTimeout is how long an RPC can be "held" before it is errored.
 	// This is used to paper over a loss of leadership by instead holding RPCs,
@@ -803,6 +970,12 @@ type RuntimeConfig struct {
 	RPCRateLimit rate.Limit
 	RPCMaxBurst  int
 
+	// RPCMaxConnsPerClient limits the number of concurrent TCP connections the
+	// RPC server will accept from any single source IP address.
+	//
+	// hcl: limits{ rpc_max_conns_per_client = 100 }
+	RPCMaxConnsPerClient int
+
 	// RPCProtocol is the Consul protocol version to use.
 	//
 	// hcl: protocol = int
@@ -824,6 +997,22 @@ type RuntimeConfig struct {
 	// a new snapshot. Defaults to 5 seconds.
 	// hcl: raft_snapshot_threshold = int
 	RaftSnapshotInterval time.Duration
+
+	// RaftTrailingLogs sets the number of log entries that will be left in the
+	// log store after a snapshot. This must be large enough that a follower can
+	// transfer and restore an entire snapshot of the state before this many new
+	// entries have been appended. In vast majority of cases the default is plenty
+	// but if there is a sustained high write throughput coupled with a huge
+	// multi-gigabyte snapshot setting this higher may be necessary to allow
+	// followers time to reload from snapshot without becoming unhealthy. If it's
+	// too low then followers are unable to ever recover from a restart and will
+	// enter a loop of constantly downloading full snapshots and never catching
+	// up. If you need to change this you should reconsider your usage of Consul
+	// as it is not designed to store multiple-gigabyte data sets with high write
+	// throughput. Defaults to 10000.
+	//
+	// hcl: raft_trailing_logs = int
+	RaftTrailingLogs int
 
 	// ReconnectTimeoutLAN specifies the amount of time to wait to reconnect with
 	// another agent before deciding it's permanently gone. This can be used to
@@ -1177,7 +1366,7 @@ type RuntimeConfig struct {
 	// hcl: skip_leave_on_interrupt = (true|false)
 	SkipLeaveOnInt bool
 
-	// StartJoinLAN is a list of addresses to attempt to join -wan when the
+	// StartJoinAddrsLAN is a list of addresses to attempt to join -lan when the
 	// agent starts. If Serf is unable to communicate with any of these
 	// addresses, then the agent will error and exit.
 	//
@@ -1234,7 +1423,8 @@ type RuntimeConfig struct {
 	TLSCipherSuites []uint16
 
 	// TLSMinVersion is used to set the minimum TLS version used for TLS
-	// connections. Should be either "tls10", "tls11", or "tls12".
+	// connections. Should be either "tls10", "tls11", "tls12" or "tls13".
+	// Defaults to tls12.
 	//
 	// hcl: tls_min_version = string
 	TLSMinVersion string
@@ -1262,12 +1452,22 @@ type RuntimeConfig struct {
 	// hcl: translate_wan_addrs = (true|false)
 	TranslateWANAddrs bool
 
+	// TxnMaxReqLen configures the upper limit for the size (in bytes) of the
+	// incoming request bodies for transactions to the /txn endpoint.
+	//
+	// hcl: limits { txn_max_req_len = uint64 }
+	TxnMaxReqLen uint64
+
 	// UIDir is the directory containing the Web UI resources.
 	// If provided, the UI endpoints will be enabled.
 	//
 	// hcl: ui_dir = string
 	// flag: -ui-dir string
 	UIDir string
+
+	//UIContentPath is a string that sets the external
+	// path to a string. Default: /ui/
+	UIContentPath string
 
 	// UnixSocketGroup contains the group of the file permissions when
 	// Consul binds to UNIX sockets.
@@ -1343,25 +1543,8 @@ type RuntimeConfig struct {
 	// ]
 	//
 	Watches []map[string]interface{}
-}
 
-// IncomingHTTPSConfig returns the TLS configuration for HTTPS
-// connections to consul.
-func (c *RuntimeConfig) IncomingHTTPSConfig() (*tls.Config, error) {
-	tc := &tlsutil.Config{
-		VerifyIncoming:           c.VerifyIncoming || c.VerifyIncomingHTTPS,
-		VerifyOutgoing:           c.VerifyOutgoing,
-		CAFile:                   c.CAFile,
-		CAPath:                   c.CAPath,
-		CertFile:                 c.CertFile,
-		KeyFile:                  c.KeyFile,
-		NodeName:                 c.NodeName,
-		ServerName:               c.ServerName,
-		TLSMinVersion:            c.TLSMinVersion,
-		CipherSuites:             c.TLSCipherSuites,
-		PreferServerCipherSuites: c.TLSPreferServerCipherSuites,
-	}
-	return tc.IncomingTLSConfig()
+	EnterpriseRuntimeConfig
 }
 
 func (c *RuntimeConfig) apiAddresses(maxPerType int) (unixAddrs, httpAddrs, httpsAddrs []string) {
@@ -1475,7 +1658,6 @@ func (c *RuntimeConfig) APIConfig(includeClientCerts bool) (*api.Config, error) 
 		cfg.Scheme = "https"
 		cfg.TLSConfig.CAFile = c.CAFile
 		cfg.TLSConfig.CAPath = c.CAPath
-		cfg.TLSConfig.Address = httpsAddr
 		if includeClientCerts {
 			cfg.TLSConfig.CertFile = c.CertFile
 			cfg.TLSConfig.KeyFile = c.KeyFile
@@ -1503,6 +1685,28 @@ func (c *RuntimeConfig) Sanitized() map[string]interface{} {
 	return sanitize("rt", reflect.ValueOf(c)).Interface().(map[string]interface{})
 }
 
+func (c *RuntimeConfig) ToTLSUtilConfig() tlsutil.Config {
+	return tlsutil.Config{
+		VerifyIncoming:           c.VerifyIncoming,
+		VerifyIncomingRPC:        c.VerifyIncomingRPC,
+		VerifyIncomingHTTPS:      c.VerifyIncomingHTTPS,
+		VerifyOutgoing:           c.VerifyOutgoing,
+		VerifyServerHostname:     c.VerifyServerHostname,
+		CAFile:                   c.CAFile,
+		CAPath:                   c.CAPath,
+		CertFile:                 c.CertFile,
+		KeyFile:                  c.KeyFile,
+		NodeName:                 c.NodeName,
+		Domain:                   c.DNSDomain,
+		ServerName:               c.ServerName,
+		TLSMinVersion:            c.TLSMinVersion,
+		CipherSuites:             c.TLSCipherSuites,
+		PreferServerCipherSuites: c.TLSPreferServerCipherSuites,
+		EnableAgentTLSForChecks:  c.EnableAgentTLSForChecks,
+		AutoEncryptTLS:           c.AutoEncryptTLS,
+	}
+}
+
 // isSecret determines whether a field name represents a field which
 // may contain a secret.
 func isSecret(name string) bool {
@@ -1528,7 +1732,6 @@ func cleanRetryJoin(a string) string {
 func sanitize(name string, v reflect.Value) reflect.Value {
 	typ := v.Type()
 	switch {
-
 	// check before isStruct and isPtr
 	case isNetAddr(typ):
 		if v.IsNil() {
@@ -1543,6 +1746,8 @@ func sanitize(name string, v reflect.Value) reflect.Value {
 			return reflect.ValueOf("unix://" + x.String())
 		case *net.IPAddr:
 			return reflect.ValueOf(x.IP.String())
+		case *net.IPNet:
+			return reflect.ValueOf(x.String())
 		default:
 			return v
 		}

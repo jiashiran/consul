@@ -2,45 +2,59 @@ package fsm
 
 import (
 	"bytes"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/connect"
 	"github.com/hashicorp/consul/agent/consul/autopilot"
 	"github.com/hashicorp/consul/agent/consul/state"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/lib"
-	"github.com/pascaldekloe/goe/verify"
+	"github.com/hashicorp/consul/sdk/testutil"
+	"github.com/hashicorp/go-raftchunking"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	t.Parallel()
 
 	assert := assert.New(t)
-	fsm, err := New(nil, os.Stderr)
+	require := require.New(t)
+	logger := testutil.Logger(t)
+	fsm, err := New(nil, logger)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	// Add some state
-	fsm.state.EnsureNode(1, &structs.Node{Node: "foo", Address: "127.0.0.1"})
-	fsm.state.EnsureNode(2, &structs.Node{Node: "baz", Address: "127.0.0.2", TaggedAddresses: map[string]string{"hello": "1.2.3.4"}, Meta: map[string]string{"testMeta": "testing123"}})
+	node1 := &structs.Node{
+		ID:         "610918a6-464f-fa9b-1a95-03bd6e88ed92",
+		Node:       "foo",
+		Datacenter: "dc1",
+		Address:    "127.0.0.1",
+	}
+	node2 := &structs.Node{
+		ID:         "40e4a748-2192-161a-0510-9bf59fe950b5",
+		Node:       "baz",
+		Datacenter: "dc1",
+		Address:    "127.0.0.2",
+		TaggedAddresses: map[string]string{
+			"hello": "1.2.3.4",
+		},
+		Meta: map[string]string{
+			"testMeta": "testing123",
+		},
+	}
+	require.NoError(fsm.state.EnsureNode(1, node1))
+	require.NoError(fsm.state.EnsureNode(2, node2))
 
 	// Add a service instance with Connect config.
 	connectConf := structs.ServiceConnect{
 		Native: true,
-		Proxy: &structs.ServiceDefinitionConnectProxy{
-			Command:  []string{"foo", "bar"},
-			ExecMode: "a",
-			Config: map[string]interface{}{
-				"a": "qwer",
-				"b": 4.3,
-			},
-		},
 	}
 	fsm.state.EnsureService(3, "foo", &structs.NodeService{
 		ID:      "web",
@@ -66,18 +80,72 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	})
 	session := &structs.Session{ID: generateUUID(), Node: "foo"}
 	fsm.state.SessionCreate(9, session)
-	acl := &structs.ACL{ID: generateUUID(), Name: "User Token"}
-	fsm.state.ACLSet(10, acl)
-	if _, err := fsm.state.ACLBootstrapInit(10); err != nil {
-		t.Fatalf("err: %v", err)
+
+	policy := &structs.ACLPolicy{
+		ID:          structs.ACLPolicyGlobalManagementID,
+		Name:        "global-management",
+		Description: "Builtin Policy that grants unlimited access",
+		Rules:       structs.ACLPolicyGlobalManagement,
+		Syntax:      acl.SyntaxCurrent,
 	}
+	policy.SetHash(true)
+	require.NoError(fsm.state.ACLPolicySet(1, policy))
+
+	role := &structs.ACLRole{
+		ID:          "86dedd19-8fae-4594-8294-4e6948a81f9a",
+		Name:        "some-role",
+		Description: "test snapshot role",
+		ServiceIdentities: []*structs.ACLServiceIdentity{
+			&structs.ACLServiceIdentity{
+				ServiceName: "example",
+			},
+		},
+	}
+	role.SetHash(true)
+	require.NoError(fsm.state.ACLRoleSet(1, role))
+
+	token := &structs.ACLToken{
+		AccessorID:  "30fca056-9fbb-4455-b94a-bf0e2bc575d6",
+		SecretID:    "cbe1c6fd-d865-4034-9d6d-64fef7fb46a9",
+		Description: "Bootstrap Token (Global Management)",
+		Policies: []structs.ACLTokenPolicyLink{
+			{
+				ID: structs.ACLPolicyGlobalManagementID,
+			},
+		},
+		CreateTime: time.Now(),
+		Local:      false,
+		// DEPRECATED (ACL-Legacy-Compat) - This is used so that the bootstrap token is still visible via the v1 acl APIs
+		Type: structs.ACLTokenTypeManagement,
+	}
+	require.NoError(fsm.state.ACLBootstrap(10, 0, token, false))
+
+	method := &structs.ACLAuthMethod{
+		Name:        "some-method",
+		Type:        "testing",
+		Description: "test snapshot auth method",
+		Config: map[string]interface{}{
+			"SessionID": "952ebfa8-2a42-46f0-bcd3-fd98a842000e",
+		},
+	}
+	require.NoError(fsm.state.ACLAuthMethodSet(1, method))
+
+	bindingRule := &structs.ACLBindingRule{
+		ID:          "85184c52-5997-4a84-9817-5945f2632a17",
+		Description: "test snapshot binding rule",
+		AuthMethod:  "some-method",
+		Selector:    "serviceaccount.namespace==default",
+		BindType:    structs.BindingRuleBindTypeService,
+		BindName:    "${serviceaccount.name}",
+	}
+	require.NoError(fsm.state.ACLBindingRuleSet(1, bindingRule))
 
 	fsm.state.KVSSet(11, &structs.DirEntry{
 		Key:   "/remove",
 		Value: []byte("foo"),
 	})
-	fsm.state.KVSDelete(12, "/remove")
-	idx, _, err := fsm.state.KVSList(nil, "/remove")
+	fsm.state.KVSDelete(12, "/remove", nil)
+	idx, _, err := fsm.state.KVSList(nil, "/remove", nil)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -129,7 +197,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		CreateIndex: 14,
 		ModifyIndex: 14,
 	}
-	assert.Nil(fsm.state.IntentionSet(14, ixn))
+	require.NoError(fsm.state.IntentionSet(14, ixn))
 
 	// CA Roots
 	roots := []*structs.CARoot{
@@ -140,7 +208,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		r.Active = false
 	}
 	ok, err := fsm.state.CARootSetCAS(15, 0, roots)
-	assert.Nil(err)
+	require.NoError(err)
 	assert.True(ok)
 
 	ok, err = fsm.state.CASetProviderState(16, &structs.CAConsulProviderState{
@@ -148,7 +216,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		PrivateKey: "foo",
 		RootCert:   "bar",
 	})
-	assert.Nil(err)
+	require.NoError(err)
 	assert.True(ok)
 
 	// CA Config
@@ -161,7 +229,50 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		},
 	}
 	err = fsm.state.CASetConfig(17, caConfig)
-	assert.Nil(err)
+	require.NoError(err)
+
+	// Config entries
+	serviceConfig := &structs.ServiceConfigEntry{
+		Kind:     structs.ServiceDefaults,
+		Name:     "foo",
+		Protocol: "http",
+	}
+	proxyConfig := &structs.ProxyConfigEntry{
+		Kind: structs.ProxyDefaults,
+		Name: "global",
+	}
+	require.NoError(fsm.state.EnsureConfigEntry(18, serviceConfig, structs.DefaultEnterpriseMeta()))
+	require.NoError(fsm.state.EnsureConfigEntry(19, proxyConfig, structs.DefaultEnterpriseMeta()))
+
+	chunkState := &raftchunking.State{
+		ChunkMap: make(raftchunking.ChunkMap),
+	}
+	chunkState.ChunkMap[0] = []*raftchunking.ChunkInfo{
+		{
+			OpNum:       0,
+			SequenceNum: 0,
+			NumChunks:   3,
+			Data:        []byte("foo"),
+		},
+		nil,
+		{
+			OpNum:       0,
+			SequenceNum: 2,
+			NumChunks:   3,
+			Data:        []byte("bar"),
+		},
+	}
+	chunkState.ChunkMap[20] = []*raftchunking.ChunkInfo{
+		nil,
+		{
+			OpNum:       20,
+			SequenceNum: 1,
+			NumChunks:   2,
+			Data:        []byte("bar"),
+		},
+	}
+	err = fsm.chunker.RestoreState(chunkState)
+	require.NoError(err)
 
 	// Snapshot
 	snap, err := fsm.Snapshot()
@@ -178,7 +289,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	}
 
 	// Try to restore on a new FSM
-	fsm2, err := New(nil, os.Stderr)
+	fsm2, err := New(nil, logger)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -196,7 +307,9 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	if len(nodes) != 2 {
 		t.Fatalf("bad: %v", nodes)
 	}
-	if nodes[0].Node != "baz" ||
+	if nodes[0].ID != node2.ID ||
+		nodes[0].Node != "baz" ||
+		nodes[0].Datacenter != "dc1" ||
 		nodes[0].Address != "127.0.0.2" ||
 		len(nodes[0].Meta) != 1 ||
 		nodes[0].Meta["testMeta"] != "testing123" ||
@@ -204,13 +317,15 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		nodes[0].TaggedAddresses["hello"] != "1.2.3.4" {
 		t.Fatalf("bad: %v", nodes[0])
 	}
-	if nodes[1].Node != "foo" ||
+	if nodes[1].ID != node1.ID ||
+		nodes[1].Node != "foo" ||
+		nodes[1].Datacenter != "dc1" ||
 		nodes[1].Address != "127.0.0.1" ||
 		len(nodes[1].TaggedAddresses) != 0 {
 		t.Fatalf("bad: %v", nodes[1])
 	}
 
-	_, fooSrv, err := fsm2.state.NodeServices(nil, "foo")
+	_, fooSrv, err := fsm2.state.NodeServices(nil, "foo", nil)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -228,7 +343,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		t.Fatalf("got: %v, want: %v", connectSrv.Connect, connectConf)
 	}
 
-	_, checks, err := fsm2.state.NodeChecks(nil, "foo")
+	_, checks, err := fsm2.state.NodeChecks(nil, "foo", nil)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -237,7 +352,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	}
 
 	// Verify key is set
-	_, d, err := fsm2.state.KVSGet(nil, "/test")
+	_, d, err := fsm2.state.KVSGet(nil, "/test", nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -246,7 +361,7 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	}
 
 	// Verify session is restored
-	idx, s, err := fsm2.state.SessionGet(nil, session.ID)
+	idx, s, err := fsm2.state.SessionGet(nil, session.ID, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -257,29 +372,40 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		t.Fatalf("bad index: %d", idx)
 	}
 
-	// Verify ACL is restored
-	_, a, err := fsm2.state.ACLGet(nil, acl.ID)
-	if err != nil {
-		t.Fatalf("err: %v", err)
+	// Verify ACL Binding Rule is restored
+	_, bindingRule2, err := fsm2.state.ACLBindingRuleGetByID(nil, bindingRule.ID, nil)
+	require.NoError(err)
+	require.Equal(bindingRule, bindingRule2)
+
+	// Verify ACL Auth Method is restored
+	_, method2, err := fsm2.state.ACLAuthMethodGetByName(nil, method.Name, nil)
+	require.NoError(err)
+	require.Equal(method, method2)
+
+	// Verify ACL Token is restored
+	_, token2, err := fsm2.state.ACLTokenGetByAccessor(nil, token.AccessorID, nil)
+	require.NoError(err)
+	{
+		// time.Time is tricky to compare generically when it takes a ser/deserialization round trip.
+		require.True(token.CreateTime.Equal(token2.CreateTime))
+		token2.CreateTime = token.CreateTime
 	}
-	if a.Name != "User Token" {
-		t.Fatalf("bad: %v", a)
-	}
-	if a.ModifyIndex <= 1 {
-		t.Fatalf("bad index: %d", idx)
-	}
-	gotB, err := fsm2.state.ACLGetBootstrap()
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	wantB := &structs.ACLBootstrap{
-		AllowBootstrap: true,
-		RaftIndex: structs.RaftIndex{
-			CreateIndex: 10,
-			ModifyIndex: 10,
-		},
-	}
-	verify.Values(t, "", gotB, wantB)
+	require.Equal(token, token2)
+
+	// Verify the acl-token-bootstrap index was restored
+	canBootstrap, index, err := fsm2.state.CanBootstrapACLToken()
+	require.False(canBootstrap)
+	require.True(index > 0)
+
+	// Verify ACL Role is restored
+	_, role2, err := fsm2.state.ACLRoleGetByID(nil, role.ID, nil)
+	require.NoError(err)
+	require.Equal(role, role2)
+
+	// Verify ACL Policy is restored
+	_, policy2, err := fsm2.state.ACLPolicyGetByID(nil, structs.ACLPolicyGlobalManagementID, nil)
+	require.NoError(err)
+	require.Equal(policy, policy2)
 
 	// Verify tombstones are restored
 	func() {
@@ -333,25 +459,38 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 
 	// Verify intentions are restored.
 	_, ixns, err := fsm2.state.Intentions(nil)
-	assert.Nil(err)
+	require.NoError(err)
 	assert.Len(ixns, 1)
 	assert.Equal(ixn, ixns[0])
 
 	// Verify CA roots are restored.
 	_, roots, err = fsm2.state.CARoots(nil)
-	assert.Nil(err)
+	require.NoError(err)
 	assert.Len(roots, 2)
 
 	// Verify provider state is restored.
 	_, state, err := fsm2.state.CAProviderState("asdf")
-	assert.Nil(err)
+	require.NoError(err)
 	assert.Equal("foo", state.PrivateKey)
 	assert.Equal("bar", state.RootCert)
 
 	// Verify CA configuration is restored.
-	_, caConf, err := fsm2.state.CAConfig()
-	assert.Nil(err)
+	_, caConf, err := fsm2.state.CAConfig(nil)
+	require.NoError(err)
 	assert.Equal(caConfig, caConf)
+
+	// Verify config entries are restored
+	_, serviceConfEntry, err := fsm2.state.ConfigEntry(nil, structs.ServiceDefaults, "foo", structs.DefaultEnterpriseMeta())
+	require.NoError(err)
+	assert.Equal(serviceConfig, serviceConfEntry)
+
+	_, proxyConfEntry, err := fsm2.state.ConfigEntry(nil, structs.ProxyDefaults, "global", structs.DefaultEnterpriseMeta())
+	require.NoError(err)
+	assert.Equal(proxyConfig, proxyConfEntry)
+
+	newChunkState, err := fsm2.chunker.CurrentState()
+	require.NoError(err)
+	assert.Equal(newChunkState, chunkState)
 
 	// Snapshot
 	snap, err = fsm2.Snapshot()
@@ -383,7 +522,8 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 func TestFSM_BadRestore_OSS(t *testing.T) {
 	t.Parallel()
 	// Create an FSM with some state.
-	fsm, err := New(nil, os.Stderr)
+	logger := testutil.Logger(t)
+	fsm, err := New(nil, logger)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -416,5 +556,52 @@ func TestFSM_BadRestore_OSS(t *testing.T) {
 	case <-abandonCh:
 		t.Fatalf("bad")
 	default:
+	}
+}
+
+func TestFSM_BadSnapshot_NilCAConfig(t *testing.T) {
+	t.Parallel()
+
+	require := require.New(t)
+
+	// Create an FSM with no config entry.
+	logger := testutil.Logger(t)
+	fsm, err := New(nil, logger)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Snapshot
+	snap, err := fsm.Snapshot()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	defer snap.Release()
+
+	// Persist
+	buf := bytes.NewBuffer(nil)
+	sink := &MockSink{buf, false}
+	if err := snap.Persist(sink); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Try to restore on a new FSM
+	fsm2, err := New(nil, logger)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Do a restore
+	if err := fsm2.Restore(sink); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Make sure there's no entry in the CA config table.
+	state := fsm2.State()
+	idx, config, err := state.CAConfig(nil)
+	require.NoError(err)
+	require.Equal(uint64(0), idx)
+	if config != nil {
+		t.Fatalf("config should be nil")
 	}
 }

@@ -7,16 +7,17 @@ import WithKvActions from 'consul-ui/mixins/kv/with-actions';
 import ascend from 'consul-ui/utils/ascend';
 
 export default Route.extend(WithKvActions, {
-  repo: service('kv'),
-  sessionRepo: service('session'),
+  repo: service('repository/kv'),
+  sessionRepo: service('repository/session'),
   model: function(params) {
     const key = params.key;
     const dc = this.modelFor('dc').dc.Name;
-    const repo = get(this, 'repo');
+    const nspace = this.modelFor('nspace').nspace.substr(1);
     return hash({
       isLoading: false,
-      parent: repo.findBySlug(ascend(key, 1) || '/', dc),
-      item: repo.findBySlug(key, dc),
+      parent: this.repo.findBySlug(ascend(key, 1) || '/', dc, nspace),
+      item: this.repo.findBySlug(key, dc, nspace),
+      session: null,
     }).then(model => {
       // TODO: Consider loading this after initial page load
       const session = get(model.item, 'Session');
@@ -24,7 +25,7 @@ export default Route.extend(WithKvActions, {
         return hash({
           ...model,
           ...{
-            session: get(this, 'sessionRepo').findByKey(session, dc),
+            session: this.sessionRepo.findByKey(session, dc, nspace),
           },
         });
       }
@@ -32,7 +33,6 @@ export default Route.extend(WithKvActions, {
     });
   },
   setupController: function(controller, model) {
-    this._super(...arguments);
     controller.setProperties(model);
   },
 });

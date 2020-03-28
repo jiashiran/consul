@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/consul/agent/mock"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/testutil/retry"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/consul/types"
 	//"github.com/stretchr/testify/require"
 )
@@ -20,11 +20,11 @@ func TestCheckAlias_remoteErrBackoff(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.ServiceID{ID: "web"},
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -52,11 +52,11 @@ func TestCheckAlias_remoteNoChecks(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.ServiceID{ID: "web"},
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -78,11 +78,11 @@ func TestCheckAlias_remoteNodeFailure(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.ServiceID{ID: "web"},
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -127,11 +127,11 @@ func TestCheckAlias_remotePassing(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID("foo", nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.ServiceID{ID: "web"},
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -176,11 +176,11 @@ func TestCheckAlias_remoteCritical(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID("foo", nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.ServiceID{ID: "web"},
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -231,11 +231,11 @@ func TestCheckAlias_remoteWarning(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID("foo", nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:      "remote",
-		ServiceID: "web",
+		ServiceID: structs.NewServiceID("web", nil),
 		CheckID:   chkID,
 		Notify:    notify,
 		RPC:       rpc,
@@ -286,7 +286,7 @@ func TestCheckAlias_remoteNodeOnlyPassing(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:    "remote",
@@ -333,7 +333,7 @@ func TestCheckAlias_remoteNodeOnlyCritical(t *testing.T) {
 	t.Parallel()
 
 	notify := newMockAliasNotify()
-	chkID := types.CheckID("foo")
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
 	rpc := &mockRPC{}
 	chk := &CheckAlias{
 		Node:    "remote",
@@ -385,14 +385,14 @@ func newMockAliasNotify() *mockAliasNotify {
 	}
 }
 
-func (m *mockAliasNotify) AddAliasCheck(chkID types.CheckID, serviceID string, ch chan<- struct{}) error {
+func (m *mockAliasNotify) AddAliasCheck(chkID structs.CheckID, serviceID structs.ServiceID, ch chan<- struct{}) error {
 	return nil
 }
 
-func (m *mockAliasNotify) RemoveAliasCheck(chkID types.CheckID, serviceID string) {
+func (m *mockAliasNotify) RemoveAliasCheck(chkID structs.CheckID, serviceID structs.ServiceID) {
 }
 
-func (m *mockAliasNotify) Checks() map[types.CheckID]*structs.HealthCheck {
+func (m *mockAliasNotify) Checks(*structs.EnterpriseMeta) map[structs.CheckID]*structs.HealthCheck {
 	return nil
 }
 
@@ -434,4 +434,32 @@ func (m *mockRPC) RPC(method string, args interface{}, reply interface{}) error 
 	}
 
 	return nil
+}
+
+// Test that local checks immediately reflect the subject states when added and
+// don't require an update to the subject before being accurate.
+func TestCheckAlias_localInitialStatus(t *testing.T) {
+	t.Parallel()
+
+	notify := newMockAliasNotify()
+	chkID := structs.NewCheckID(types.CheckID("foo"), nil)
+	rpc := &mockRPC{}
+	chk := &CheckAlias{
+		ServiceID: structs.ServiceID{ID: "web"},
+		CheckID:   chkID,
+		Notify:    notify,
+		RPC:       rpc,
+	}
+
+	chk.Start()
+	defer chk.Stop()
+
+	// Don't touch the aliased service or it's checks (there are none but this is
+	// valid and should be consisded "passing").
+
+	retry.Run(t, func(r *retry.R) {
+		if got, want := notify.State(chkID), api.HealthPassing; got != want {
+			r.Fatalf("got state %q want %q", got, want)
+		}
+	})
 }

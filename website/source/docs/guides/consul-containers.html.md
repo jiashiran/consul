@@ -6,11 +6,11 @@ description: |-
   This guide describes how to run Consul on containers, with Docker as the primary focus. It also describes best practices when running a Consul cluster in production on Docker.
 ---
 
-## Consul with Containers
+# Consul with Containers
 This guide describes critical aspects of operating a Consul cluster that's run inside containers. It primarily focuses on the Docker container runtime, but the principles largely apply to rkt, oci, and other container runtimes as well.
 
 ## Consul Official Docker Image
-Consul's official Docker images are tagged with version numbers. For example, `docker pull consul:0.9.0` will pull the 0.9.0 Consul release image.
+Consul's official Docker images are tagged with version numbers. For example, `docker pull consul:1.4.4` will pull the 1.4.4 Consul release image.
 
 For major releases, make sure to read our [upgrade guides](/docs/upgrade-specific.html) before upgrading a cluster.
 

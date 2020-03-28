@@ -6,15 +6,18 @@ import (
 )
 
 type dirEntFilter struct {
-	acl acl.ACL
-	ent structs.DirEntries
+	authorizer acl.Authorizer
+	ent        structs.DirEntries
 }
 
 func (d *dirEntFilter) Len() int {
 	return len(d.ent)
 }
 func (d *dirEntFilter) Filter(i int) bool {
-	return !d.acl.KeyRead(d.ent[i].Key)
+	var entCtx acl.AuthorizerContext
+	d.ent[i].FillAuthzContext(&entCtx)
+
+	return d.authorizer.KeyRead(d.ent[i].Key, &entCtx) != acl.Allow
 }
 func (d *dirEntFilter) Move(dst, src, span int) {
 	copy(d.ent[dst:dst+span], d.ent[src:src+span])
@@ -22,37 +25,14 @@ func (d *dirEntFilter) Move(dst, src, span int) {
 
 // FilterDirEnt is used to filter a list of directory entries
 // by applying an ACL policy
-func FilterDirEnt(acl acl.ACL, ent structs.DirEntries) structs.DirEntries {
-	df := dirEntFilter{acl: acl, ent: ent}
+func FilterDirEnt(authorizer acl.Authorizer, ent structs.DirEntries) structs.DirEntries {
+	df := dirEntFilter{authorizer: authorizer, ent: ent}
 	return ent[:FilterEntries(&df)]
 }
 
-type keyFilter struct {
-	acl  acl.ACL
-	keys []string
-}
-
-func (k *keyFilter) Len() int {
-	return len(k.keys)
-}
-func (k *keyFilter) Filter(i int) bool {
-	return !k.acl.KeyRead(k.keys[i])
-}
-
-func (k *keyFilter) Move(dst, src, span int) {
-	copy(k.keys[dst:dst+span], k.keys[src:src+span])
-}
-
-// FilterKeys is used to filter a list of keys by
-// applying an ACL policy
-func FilterKeys(acl acl.ACL, keys []string) []string {
-	kf := keyFilter{acl: acl, keys: keys}
-	return keys[:FilterEntries(&kf)]
-}
-
 type txnResultsFilter struct {
-	acl     acl.ACL
-	results structs.TxnResults
+	authorizer acl.Authorizer
+	results    structs.TxnResults
 }
 
 func (t *txnResultsFilter) Len() int {
@@ -61,8 +41,23 @@ func (t *txnResultsFilter) Len() int {
 
 func (t *txnResultsFilter) Filter(i int) bool {
 	result := t.results[i]
-	if result.KV != nil {
-		return !t.acl.KeyRead(result.KV.Key)
+	var authzContext acl.AuthorizerContext
+	switch {
+	case result.KV != nil:
+		result.KV.EnterpriseMeta.FillAuthzContext(&authzContext)
+		return t.authorizer.KeyRead(result.KV.Key, &authzContext) != acl.Allow
+	case result.Node != nil:
+		structs.WildcardEnterpriseMeta().FillAuthzContext(&authzContext)
+		return t.authorizer.NodeRead(result.Node.Node, &authzContext) != acl.Allow
+	case result.Service != nil:
+		result.Service.EnterpriseMeta.FillAuthzContext(&authzContext)
+		return t.authorizer.ServiceRead(result.Service.Service, &authzContext) != acl.Allow
+	case result.Check != nil:
+		result.Check.EnterpriseMeta.FillAuthzContext(&authzContext)
+		if result.Check.ServiceName != "" {
+			return t.authorizer.ServiceRead(result.Check.ServiceName, &authzContext) != acl.Allow
+		}
+		return t.authorizer.NodeRead(result.Check.Node, &authzContext) != acl.Allow
 	}
 	return false
 }
@@ -73,8 +68,8 @@ func (t *txnResultsFilter) Move(dst, src, span int) {
 
 // FilterTxnResults is used to filter a list of transaction results by
 // applying an ACL policy.
-func FilterTxnResults(acl acl.ACL, results structs.TxnResults) structs.TxnResults {
-	rf := txnResultsFilter{acl: acl, results: results}
+func FilterTxnResults(authorizer acl.Authorizer, results structs.TxnResults) structs.TxnResults {
+	rf := txnResultsFilter{authorizer: authorizer, results: results}
 	return results[:FilterEntries(&rf)]
 }
 

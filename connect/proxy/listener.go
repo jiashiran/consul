@@ -4,20 +4,21 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
+	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/connect"
+	"github.com/hashicorp/consul/ipaddr"
+	"github.com/hashicorp/go-hclog"
 )
 
 const (
-	publicListenerMetricPrefix = "inbound"
-	upstreamMetricPrefix       = "upstream"
+	publicListenerPrefix   = "inbound"
+	upstreamListenerPrefix = "upstream"
 )
 
 // Listener is the implementation of a specific proxy listener. It has pluggable
@@ -27,7 +28,7 @@ type Listener struct {
 	// Service is the connect service instance to use.
 	Service *connect.Service
 
-	// listenFunc, dialFunc and bindAddr are set by type-specific constructors
+	// listenFunc, dialFunc, and bindAddr are set by type-specific constructors.
 	listenFunc func() (net.Listener, error)
 	dialFunc   func() (net.Conn, error)
 	bindAddr   string
@@ -44,10 +45,10 @@ type Listener struct {
 	// this is cheap and correct.
 	listeningChan chan struct{}
 
-	logger *log.Logger
+	logger hclog.Logger
 
 	// Gauge to track current open connections
-	activeConns  int64
+	activeConns  int32
 	connWG       sync.WaitGroup
 	metricPrefix string
 	metricLabels []metrics.Label
@@ -56,8 +57,8 @@ type Listener struct {
 // NewPublicListener returns a Listener setup to listen for public mTLS
 // connections and proxy them to the configured local application over TCP.
 func NewPublicListener(svc *connect.Service, cfg PublicListenerConfig,
-	logger *log.Logger) *Listener {
-	bindAddr := fmt.Sprintf("%s:%d", cfg.BindAddress, cfg.BindPort)
+	logger hclog.Logger) *Listener {
+	bindAddr := ipaddr.FormatAddressPort(cfg.BindAddress, cfg.BindPort)
 	return &Listener{
 		Service: svc,
 		listenFunc: func() (net.Listener, error) {
@@ -70,8 +71,8 @@ func NewPublicListener(svc *connect.Service, cfg PublicListenerConfig,
 		bindAddr:      bindAddr,
 		stopChan:      make(chan struct{}),
 		listeningChan: make(chan struct{}),
-		logger:        logger,
-		metricPrefix:  publicListenerMetricPrefix,
+		logger:        logger.Named(publicListenerPrefix),
+		metricPrefix:  publicListenerPrefix,
 		// For now we only label ourselves as source - we could fetch the src
 		// service from cert on each connection and label metrics differently but it
 		// significaly complicates the active connection tracking here and it's not
@@ -86,32 +87,40 @@ func NewPublicListener(svc *connect.Service, cfg PublicListenerConfig,
 
 // NewUpstreamListener returns a Listener setup to listen locally for TCP
 // connections that are proxied to a discovered Connect service instance.
-func NewUpstreamListener(svc *connect.Service, cfg UpstreamConfig,
-	logger *log.Logger) *Listener {
-	bindAddr := fmt.Sprintf("%s:%d", cfg.LocalBindAddress, cfg.LocalBindPort)
+func NewUpstreamListener(svc *connect.Service, client *api.Client,
+	cfg UpstreamConfig, logger hclog.Logger) *Listener {
+	return newUpstreamListenerWithResolver(svc, cfg,
+		UpstreamResolverFuncFromClient(client), logger)
+}
+
+func newUpstreamListenerWithResolver(svc *connect.Service, cfg UpstreamConfig,
+	resolverFunc func(UpstreamConfig) (connect.Resolver, error),
+	logger hclog.Logger) *Listener {
+	bindAddr := ipaddr.FormatAddressPort(cfg.LocalBindAddress, cfg.LocalBindPort)
 	return &Listener{
 		Service: svc,
 		listenFunc: func() (net.Listener, error) {
 			return net.Listen("tcp", bindAddr)
 		},
 		dialFunc: func() (net.Conn, error) {
-			if cfg.resolver == nil {
-				return nil, errors.New("no resolver provided")
+			rf, err := resolverFunc(cfg)
+			if err != nil {
+				return nil, err
 			}
 			ctx, cancel := context.WithTimeout(context.Background(),
-				time.Duration(cfg.ConnectTimeoutMs)*time.Millisecond)
+				cfg.ConnectTimeout())
 			defer cancel()
-			return svc.Dial(ctx, cfg.resolver)
+			return svc.Dial(ctx, rf)
 		},
 		bindAddr:      bindAddr,
 		stopChan:      make(chan struct{}),
 		listeningChan: make(chan struct{}),
-		logger:        logger,
-		metricPrefix:  upstreamMetricPrefix,
+		logger:        logger.Named(upstreamListenerPrefix),
+		metricPrefix:  upstreamListenerPrefix,
 		metricLabels: []metrics.Label{
 			{Name: "src", Value: svc.Name()},
 			// TODO(banks): namespace support
-			{Name: "dst_type", Value: cfg.DestinationType},
+			{Name: "dst_type", Value: string(cfg.DestinationType)},
 			{Name: "dst", Value: cfg.DestinationName},
 		},
 	}
@@ -152,7 +161,7 @@ func (l *Listener) handleConn(src net.Conn) {
 
 	dst, err := l.dialFunc()
 	if err != nil {
-		l.logger.Printf("[ERR] failed to dial: %s", err)
+		l.logger.Error("failed to dial", "error", err)
 		return
 	}
 
@@ -175,7 +184,7 @@ func (l *Listener) handleConn(src net.Conn) {
 	go func() {
 		err = conn.CopyBytes()
 		if err != nil {
-			l.logger.Printf("[ERR] connection failed: %s", err)
+			l.logger.Error("connection failed", "error", err)
 		}
 		close(connStop)
 	}()
@@ -219,12 +228,12 @@ func (l *Listener) handleConn(src net.Conn) {
 // trackConn increments the count of active conns and returns a func() that can
 // be deferred on to decrement the counter again on connection close.
 func (l *Listener) trackConn() func() {
-	c := atomic.AddInt64(&l.activeConns, 1)
+	c := atomic.AddInt32(&l.activeConns, 1)
 	metrics.SetGaugeWithLabels([]string{l.metricPrefix, "conns"}, float32(c),
 		l.metricLabels)
 
 	return func() {
-		c := atomic.AddInt64(&l.activeConns, -1)
+		c := atomic.AddInt32(&l.activeConns, -1)
 		metrics.SetGaugeWithLabels([]string{l.metricPrefix, "conns"}, float32(c),
 			l.metricLabels)
 	}

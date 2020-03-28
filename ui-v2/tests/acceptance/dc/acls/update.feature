@@ -1,7 +1,9 @@
 @setupApplicationTest
+@notNamespaceable
 Feature: dc / acls / update: ACL Update
   Background:
     Given 1 datacenter model with the value "datacenter"
+    And I'm using a legacy token
     And 1 acl model from yaml
     ---
       ID: key
@@ -19,10 +21,11 @@ Feature: dc / acls / update: ACL Update
     ---
     And I click "[value=[Type]]"
     And I submit
-    Then a PUT request is made to "/v1/acl/update?dc=datacenter" with the body from yaml
+    Then a PUT request was made to "/v1/acl/update?dc=datacenter" from yaml
     ---
-      Name: [Name]
-      Type: [Type]
+      body:
+        Name: [Name]
+        Type: [Type]
     ---
     Then the url should be /datacenter/acls
     And "[data-notification]" has the "notification-update" class
@@ -43,7 +46,4 @@ Feature: dc / acls / update: ACL Update
     And "[data-notification]" has the "error" class
 # @ignore
   # Scenario: Rules can be edited/updated
-  #   Then ok
-# @ignore
-  # Scenario: The feedback dialog says success or failure
   #   Then ok

@@ -1,8 +1,9 @@
 package lib
 
 import (
-	"github.com/hashicorp/serf/serf"
 	"time"
+
+	"github.com/hashicorp/serf/serf"
 )
 
 // SerfDefaultConfig returns a Consul-flavored Serf default configuration,
@@ -24,4 +25,20 @@ func SerfDefaultConfig() *serf.Config {
 	base.LeavePropagateDelay = 3 * time.Second
 
 	return base
+}
+
+func GetSerfTags(serf *serf.Serf) map[string]string {
+	tags := make(map[string]string)
+	for tag, value := range serf.LocalMember().Tags {
+		tags[tag] = value
+	}
+
+	return tags
+}
+
+func UpdateSerfTag(serf *serf.Serf, tag, value string) {
+	tags := GetSerfTags(serf)
+	tags[tag] = value
+
+	serf.SetTags(tags)
 }

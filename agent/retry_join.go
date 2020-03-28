@@ -2,13 +2,13 @@ package agent
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/consul/lib"
 	discover "github.com/hashicorp/go-discover"
 	discoverk8s "github.com/hashicorp/go-discover/provider/k8s"
+	"github.com/hashicorp/go-hclog"
 )
 
 func (a *Agent) retryJoinLAN() {
@@ -18,7 +18,7 @@ func (a *Agent) retryJoinLAN() {
 		maxAttempts: a.config.RetryJoinMaxAttemptsLAN,
 		interval:    a.config.RetryJoinIntervalLAN,
 		join:        a.JoinLAN,
-		logger:      a.logger,
+		logger:      a.logger.With("cluster", "LAN"),
 	}
 	if err := r.retryJoin(); err != nil {
 		a.retryJoinCh <- err
@@ -32,11 +32,60 @@ func (a *Agent) retryJoinWAN() {
 		maxAttempts: a.config.RetryJoinMaxAttemptsWAN,
 		interval:    a.config.RetryJoinIntervalWAN,
 		join:        a.JoinWAN,
-		logger:      a.logger,
+		logger:      a.logger.With("cluster", "WAN"),
 	}
 	if err := r.retryJoin(); err != nil {
 		a.retryJoinCh <- err
 	}
+}
+
+func newDiscover() (*discover.Discover, error) {
+	providers := make(map[string]discover.Provider)
+	for k, v := range discover.Providers {
+		providers[k] = v
+	}
+	providers["k8s"] = &discoverk8s.Provider{}
+
+	return discover.New(
+		discover.WithUserAgent(lib.UserAgent()),
+		discover.WithProviders(providers),
+	)
+}
+
+func retryJoinAddrs(disco *discover.Discover, cluster string, retryJoin []string, logger hclog.Logger) []string {
+	addrs := []string{}
+	if disco == nil {
+		return addrs
+	}
+	for _, addr := range retryJoin {
+		switch {
+		case strings.Contains(addr, "provider="):
+			servers, err := disco.Addrs(addr, logger.StandardLogger(&hclog.StandardLoggerOptions{
+				InferLevels: true,
+			}))
+			if err != nil {
+				if logger != nil {
+					logger.Error("Cannot discover address",
+						"address", addr,
+						"error", err,
+					)
+				}
+			} else {
+				addrs = append(addrs, servers...)
+				if logger != nil {
+					logger.Info("Discovered servers",
+						"cluster", cluster,
+						"servers", strings.Join(servers, " "),
+					)
+				}
+			}
+
+		default:
+			addrs = append(addrs, addr)
+		}
+	}
+
+	return addrs
 }
 
 // retryJoiner is used to handle retrying a join until it succeeds or all
@@ -61,7 +110,7 @@ type retryJoiner struct {
 
 	// logger is the agent logger. Log messages should contain the
 	// "agent: " prefix.
-	logger *log.Logger
+	logger hclog.Logger
 }
 
 func (r *retryJoiner) retryJoin() error {
@@ -69,53 +118,25 @@ func (r *retryJoiner) retryJoin() error {
 		return nil
 	}
 
-	// Copy the default providers, and then add the non-default
-	providers := make(map[string]discover.Provider)
-	for k, v := range discover.Providers {
-		providers[k] = v
-	}
-	providers["k8s"] = &discoverk8s.Provider{}
-
-	disco, err := discover.New(
-		discover.WithUserAgent(lib.UserAgent()),
-		discover.WithProviders(providers),
-	)
+	disco, err := newDiscover()
 	if err != nil {
 		return err
 	}
 
-	r.logger.Printf("[INFO] agent: Retry join %s is supported for: %s", r.cluster, strings.Join(disco.Names(), " "))
-	r.logger.Printf("[INFO] agent: Joining %s cluster...", r.cluster)
+	r.logger.Info("Retry join is supported for the following discovery methods",
+		"discovery_methods", strings.Join(disco.Names(), " "),
+	)
+	r.logger.Info("Joining cluster...")
 	attempt := 0
 	for {
-		var addrs []string
-		var err error
-
-		for _, addr := range r.addrs {
-			switch {
-			case strings.Contains(addr, "provider="):
-				servers, err := disco.Addrs(addr, r.logger)
-				if err != nil {
-					r.logger.Printf("[ERR] agent: Join %s: %s", r.cluster, err)
-				} else {
-					addrs = append(addrs, servers...)
-					r.logger.Printf("[INFO] agent: Discovered %s servers: %s", r.cluster, strings.Join(servers, " "))
-				}
-
-			default:
-				addrs = append(addrs, addr)
-			}
-		}
-
+		addrs := retryJoinAddrs(disco, r.cluster, r.addrs, r.logger)
 		if len(addrs) > 0 {
 			n, err := r.join(addrs)
 			if err == nil {
-				r.logger.Printf("[INFO] agent: Join %s completed. Synced with %d initial agents", r.cluster, n)
+				r.logger.Info("Join cluster completed. Synced with initial agents", "num_agents", n)
 				return nil
 			}
-		}
-
-		if len(addrs) == 0 {
+		} else if len(addrs) == 0 {
 			err = fmt.Errorf("No servers to join")
 		}
 
@@ -124,7 +145,10 @@ func (r *retryJoiner) retryJoin() error {
 			return fmt.Errorf("agent: max join %s retry exhausted, exiting", r.cluster)
 		}
 
-		r.logger.Printf("[WARN] agent: Join %s failed: %v, retrying in %v", r.cluster, err, r.interval)
+		r.logger.Warn("Join cluster failed, will retry",
+			"retry_interval", r.interval,
+			"error", err,
+		)
 		time.Sleep(r.interval)
 	}
 }

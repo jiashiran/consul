@@ -1,12 +1,11 @@
 import Route from '@ember/routing/route';
 import { inject as service } from '@ember/service';
 import { hash } from 'rsvp';
-import { get } from '@ember/object';
 
 import WithIntentionActions from 'consul-ui/mixins/intention/with-actions';
 
 export default Route.extend(WithIntentionActions, {
-  repo: service('intentions'),
+  repo: service('repository/intention'),
   queryParams: {
     s: {
       as: 'filter',
@@ -15,11 +14,13 @@ export default Route.extend(WithIntentionActions, {
   },
   model: function(params) {
     return hash({
-      items: get(this, 'repo').findAllByDatacenter(this.modelFor('dc').dc.Name),
+      items: this.repo.findAllByDatacenter(
+        this.modelFor('dc').dc.Name,
+        this.modelFor('nspace').nspace.substr(1)
+      ),
     });
   },
   setupController: function(controller, model) {
-    this._super(...arguments);
     controller.setProperties(model);
   },
 });

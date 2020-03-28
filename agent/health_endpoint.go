@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	cachetype "github.com/hashicorp/consul/agent/cache-types"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/api"
 )
@@ -13,6 +14,9 @@ import (
 func (s *HTTPServer) HealthChecksInState(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
 	// Set default DC
 	args := structs.ChecksInStateRequest{}
+	if err := s.parseEntMeta(req, &args.EnterpriseMeta); err != nil {
+		return nil, err
+	}
 	s.parseSource(req, &args.Source)
 	args.NodeMetaFilters = s.parseMetaFilter(req)
 	if done := s.parse(resp, req, &args.Datacenter, &args.QueryOptions); done {
@@ -58,6 +62,9 @@ RETRY_ONCE:
 func (s *HTTPServer) HealthNodeChecks(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
 	// Set default DC
 	args := structs.NodeSpecificRequest{}
+	if err := s.parseEntMeta(req, &args.EnterpriseMeta); err != nil {
+		return nil, err
+	}
 	if done := s.parse(resp, req, &args.Datacenter, &args.QueryOptions); done {
 		return nil, nil
 	}
@@ -101,6 +108,9 @@ RETRY_ONCE:
 func (s *HTTPServer) HealthServiceChecks(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
 	// Set default DC
 	args := structs.ServiceSpecificRequest{}
+	if err := s.parseEntMetaNoWildcard(req, &args.EnterpriseMeta); err != nil {
+		return nil, err
+	}
 	s.parseSource(req, &args.Source)
 	args.NodeMetaFilters = s.parseMetaFilter(req)
 	if done := s.parse(resp, req, &args.Datacenter, &args.QueryOptions); done {
@@ -154,16 +164,19 @@ func (s *HTTPServer) HealthServiceNodes(resp http.ResponseWriter, req *http.Requ
 func (s *HTTPServer) healthServiceNodes(resp http.ResponseWriter, req *http.Request, connect bool) (interface{}, error) {
 	// Set default DC
 	args := structs.ServiceSpecificRequest{Connect: connect}
+	if err := s.parseEntMetaNoWildcard(req, &args.EnterpriseMeta); err != nil {
+		return nil, err
+	}
 	s.parseSource(req, &args.Source)
 	args.NodeMetaFilters = s.parseMetaFilter(req)
 	if done := s.parse(resp, req, &args.Datacenter, &args.QueryOptions); done {
 		return nil, nil
 	}
 
-	// Check for a tag
+	// Check for tags
 	params := req.URL.Query()
 	if _, ok := params["tag"]; ok {
-		args.ServiceTag = params.Get("tag")
+		args.ServiceTags = params["tag"]
 		args.TagFilter = true
 	}
 
@@ -184,14 +197,29 @@ func (s *HTTPServer) healthServiceNodes(resp http.ResponseWriter, req *http.Requ
 	// Make the RPC request
 	var out structs.IndexedCheckServiceNodes
 	defer setMeta(resp, &out.QueryMeta)
-RETRY_ONCE:
-	if err := s.agent.RPC("Health.ServiceNodes", &args, &out); err != nil {
-		return nil, err
-	}
-	if args.QueryOptions.AllowStale && args.MaxStaleDuration > 0 && args.MaxStaleDuration < out.LastContact {
-		args.AllowStale = false
-		args.MaxStaleDuration = 0
-		goto RETRY_ONCE
+
+	if args.QueryOptions.UseCache {
+		raw, m, err := s.agent.cache.Get(cachetype.HealthServicesName, &args)
+		if err != nil {
+			return nil, err
+		}
+		defer setCacheMeta(resp, &m)
+		reply, ok := raw.(*structs.IndexedCheckServiceNodes)
+		if !ok {
+			// This should never happen, but we want to protect against panics
+			return nil, fmt.Errorf("internal error: response type not correct")
+		}
+		out = *reply
+	} else {
+	RETRY_ONCE:
+		if err := s.agent.RPC("Health.ServiceNodes", &args, &out); err != nil {
+			return nil, err
+		}
+		if args.QueryOptions.AllowStale && args.MaxStaleDuration > 0 && args.MaxStaleDuration < out.LastContact {
+			args.AllowStale = false
+			args.MaxStaleDuration = 0
+			goto RETRY_ONCE
+		}
 	}
 	out.ConsistencyLevel = args.QueryOptions.ConsistencyLevel()
 
@@ -219,7 +247,7 @@ RETRY_ONCE:
 	}
 
 	// Translate addresses after filtering so we don't waste effort.
-	s.agent.TranslateAddresses(args.Datacenter, out.Nodes)
+	s.agent.TranslateAddresses(args.Datacenter, out.Nodes, TranslateAddressAcceptAny)
 
 	// Use empty list instead of nil
 	if out.Nodes == nil {
@@ -248,17 +276,21 @@ RETRY_ONCE:
 // filterNonPassing is used to filter out any nodes that have check that are not passing
 func filterNonPassing(nodes structs.CheckServiceNodes) structs.CheckServiceNodes {
 	n := len(nodes)
+
+	// Make a copy of the cached nodes rather than operating on the cache directly
+	out := append(nodes[:0:0], nodes...)
+
 OUTER:
 	for i := 0; i < n; i++ {
-		node := nodes[i]
+		node := out[i]
 		for _, check := range node.Checks {
 			if check.Status != api.HealthPassing {
-				nodes[i], nodes[n-1] = nodes[n-1], structs.CheckServiceNode{}
+				out[i], out[n-1] = out[n-1], structs.CheckServiceNode{}
 				n--
 				i--
 				continue OUTER
 			}
 		}
 	}
-	return nodes[:n]
+	return out[:n]
 }

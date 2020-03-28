@@ -1,13 +1,12 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/x509"
-	"log"
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/connect"
 	"github.com/hashicorp/consul/lib"
+	"github.com/hashicorp/go-hclog"
 )
 
 // Proxy implements the built-in connect proxy.
@@ -15,7 +14,7 @@ type Proxy struct {
 	client     *api.Client
 	cfgWatcher ConfigWatcher
 	stopChan   chan struct{}
-	logger     *log.Logger
+	logger     hclog.Logger
 	service    *connect.Service
 }
 
@@ -23,7 +22,7 @@ type Proxy struct {
 //
 // The ConfigWatcher can be used to update the configuration of the proxy.
 // Whenever a new configuration is detected, the proxy will reconfigure itself.
-func New(client *api.Client, cw ConfigWatcher, logger *log.Logger) (*Proxy, error) {
+func New(client *api.Client, cw ConfigWatcher, logger hclog.Logger) (*Proxy, error) {
 	return &Proxy{
 		client:     client,
 		cfgWatcher: cw,
@@ -49,7 +48,7 @@ func (p *Proxy) Serve() error {
 			return err
 
 		case newCfg := <-p.cfgWatcher.Watch():
-			p.logger.Printf("[DEBUG] got new config")
+			p.logger.Debug("got new config")
 
 			if cfg == nil {
 				// Initial setup
@@ -57,7 +56,7 @@ func (p *Proxy) Serve() error {
 				// Setup telemetry if configured
 				_, err := lib.InitTelemetry(newCfg.Telemetry)
 				if err != nil {
-					p.logger.Printf("[ERR] proxy telemetry config error: %s", err)
+					p.logger.Error("proxy telemetry config error", "error", err)
 				}
 
 				// Setup Service instance now we know target ID etc
@@ -69,12 +68,16 @@ func (p *Proxy) Serve() error {
 
 				go func() {
 					<-service.ReadyWait()
-					p.logger.Printf("[INFO] proxy loaded config and ready to serve")
+					p.logger.Info("Proxy loaded config and ready to serve")
 					tcfg := service.ServerTLSConfig()
 					cert, _ := tcfg.GetCertificate(nil)
 					leaf, _ := x509.ParseCertificate(cert.Certificate[0])
-					p.logger.Printf("[DEBUG] leaf: %s roots: %s", leaf.URIs[0],
-						bytes.Join(tcfg.RootCAs.Subjects(), []byte(",")))
+					roots, err := connect.CommonNamesFromCertPool(tcfg.RootCAs)
+					if err != nil {
+						p.logger.Error("Failed to parse root subjects", "error", err)
+					} else {
+						p.logger.Info("Parsed TLS identity", "uri", leaf.URIs[0], "roots", roots)
+					}
 
 					// Only start a listener if we have a port set. This allows
 					// the configuration to disable our public listener.
@@ -84,9 +87,10 @@ func (p *Proxy) Serve() error {
 						err = p.startListener("public listener", l)
 						if err != nil {
 							// This should probably be fatal.
-							p.logger.Printf("[ERR] failed to start public listener: %s", err)
+							p.logger.Error("failed to start public listener", "error", err)
 							failCh <- err
 						}
+
 					}
 				}()
 			}
@@ -96,19 +100,20 @@ func (p *Proxy) Serve() error {
 			// start one of each and stop/modify if changes occur.
 			for _, uc := range newCfg.Upstreams {
 				uc.applyDefaults()
-				uc.resolver = UpstreamResolverFromClient(p.client, uc)
 
 				if uc.LocalBindPort < 1 {
-					p.logger.Printf("[ERR] upstream %s has no local_bind_port. "+
-						"Can't start upstream.", uc.String())
+					p.logger.Error("upstream has no local_bind_port. "+
+						"Can't start upstream.", "upstream", uc.String())
 					continue
 				}
 
-				l := NewUpstreamListener(p.service, uc, p.logger)
+				l := NewUpstreamListener(p.service, p.client, uc, p.logger)
 				err := p.startListener(uc.String(), l)
 				if err != nil {
-					p.logger.Printf("[ERR] failed to start upstream %s: %s", uc.String(),
-						err)
+					p.logger.Error("failed to start upstream",
+						"upstream", uc.String(),
+						"error", err,
+					)
 				}
 			}
 			cfg = newCfg
@@ -121,14 +126,14 @@ func (p *Proxy) Serve() error {
 
 // startPublicListener is run from the internal state machine loop
 func (p *Proxy) startListener(name string, l *Listener) error {
-	p.logger.Printf("[INFO] %s starting on %s", name, l.BindAddr())
+	p.logger.Info("Starting listener", "listener", name, "bind_addr", l.BindAddr())
 	go func() {
 		err := l.Serve()
 		if err != nil {
-			p.logger.Printf("[ERR] %s stopped with error: %s", name, err)
+			p.logger.Error("listener stopped with error", "listener", name, "error", err)
 			return
 		}
-		p.logger.Printf("[INFO] %s stopped", name)
+		p.logger.Info("listener stopped", "listener", name)
 	}()
 
 	go func() {

@@ -10,16 +10,18 @@ import (
 
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/consul/testrpc"
 	"github.com/hashicorp/serf/coordinate"
 )
 
 func TestCoordinate_Disabled_Response(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), `
+	a := NewTestAgent(t, t.Name(), `
 		disable_coordinates = true
 `)
 	defer a.Shutdown()
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
 	tests := []func(resp http.ResponseWriter, req *http.Request) (interface{}, error){
 		a.srv.CoordinateDatacenters,
@@ -50,14 +52,19 @@ func TestCoordinate_Disabled_Response(t *testing.T) {
 
 func TestCoordinate_Datacenters(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), "")
+	a := NewTestAgent(t, t.Name(), "")
 	defer a.Shutdown()
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
 	req, _ := http.NewRequest("GET", "/v1/coordinate/datacenters", nil)
 	resp := httptest.NewRecorder()
 	obj, err := a.srv.CoordinateDatacenters(resp, req)
 	if err != nil {
 		t.Fatalf("err: %v", err)
+	}
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("bad: %v", resp.Code)
 	}
 
 	maps := obj.([]structs.DatacenterMap)
@@ -71,22 +78,33 @@ func TestCoordinate_Datacenters(t *testing.T) {
 
 func TestCoordinate_Nodes(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), "")
+	a := NewTestAgent(t, t.Name(), "")
 	defer a.Shutdown()
-	testrpc.WaitForLeader(t, a.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
 	// Make sure an empty list is non-nil.
 	req, _ := http.NewRequest("GET", "/v1/coordinate/nodes?dc=dc1", nil)
 	resp := httptest.NewRecorder()
-	obj, err := a.srv.CoordinateNodes(resp, req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	retry.Run(t, func(r *retry.R) {
+		obj, err := a.srv.CoordinateNodes(resp, req)
+		if err != nil {
+			r.Fatalf("err: %v", err)
+		}
 
-	coordinates := obj.(structs.Coordinates)
-	if coordinates == nil || len(coordinates) != 0 {
-		t.Fatalf("bad: %v", coordinates)
-	}
+		if resp.Code != http.StatusOK {
+			r.Fatalf("bad: %v", resp.Code)
+		}
+
+		// Check that coordinates are empty before registering a node
+		coordinates, ok := obj.(structs.Coordinates)
+		if !ok {
+			r.Fatalf("expected: structs.Coordinates, received: %+v", obj)
+		}
+
+		if len(coordinates) != 0 {
+			r.Fatalf("coordinates should be empty, received: %v", coordinates)
+		}
+	})
 
 	// Register the nodes.
 	nodes := []string{"foo", "bar"}
@@ -128,63 +146,92 @@ func TestCoordinate_Nodes(t *testing.T) {
 	// Query back and check the nodes are present and sorted correctly.
 	req, _ = http.NewRequest("GET", "/v1/coordinate/nodes?dc=dc1", nil)
 	resp = httptest.NewRecorder()
-	obj, err = a.srv.CoordinateNodes(resp, req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	retry.Run(t, func(r *retry.R) {
+		obj, err := a.srv.CoordinateNodes(resp, req)
+		if err != nil {
+			r.Fatalf("err: %v", err)
+		}
 
-	coordinates = obj.(structs.Coordinates)
-	if len(coordinates) != 2 ||
-		coordinates[0].Node != "bar" ||
-		coordinates[1].Node != "foo" {
-		t.Fatalf("bad: %v", coordinates)
-	}
+		if resp.Code != http.StatusOK {
+			r.Fatalf("bad: %v", resp.Code)
+		}
 
+		coordinates, ok := obj.(structs.Coordinates)
+		if !ok {
+			r.Fatalf("expected: structs.Coordinates, received: %+v", obj)
+		}
+		if len(coordinates) != 2 ||
+			coordinates[0].Node != "bar" ||
+			coordinates[1].Node != "foo" {
+			r.Fatalf("expected: bar, foo received: %v", coordinates)
+		}
+	})
 	// Filter on a nonexistent node segment
 	req, _ = http.NewRequest("GET", "/v1/coordinate/nodes?segment=nope", nil)
 	resp = httptest.NewRecorder()
-	obj, err = a.srv.CoordinateNodes(resp, req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	retry.Run(t, func(r *retry.R) {
+		obj, err := a.srv.CoordinateNodes(resp, req)
+		if err != nil {
+			r.Fatalf("err: %v", err)
+		}
 
-	coordinates = obj.(structs.Coordinates)
-	if len(coordinates) != 0 {
-		t.Fatalf("bad: %v", coordinates)
-	}
+		if resp.Code != http.StatusOK {
+			r.Fatalf("bad: %v", resp.Code)
+		}
 
+		coordinates, ok := obj.(structs.Coordinates)
+		if !ok {
+			r.Fatalf("expected: structs.Coordinates, received: %+v", obj)
+		}
+		if len(coordinates) != 0 {
+			r.Fatalf("coordinates should be empty, received: %v", coordinates)
+		}
+	})
 	// Filter on a real node segment
 	req, _ = http.NewRequest("GET", "/v1/coordinate/nodes?segment=alpha", nil)
 	resp = httptest.NewRecorder()
-	obj, err = a.srv.CoordinateNodes(resp, req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	retry.Run(t, func(r *retry.R) {
+		obj, err := a.srv.CoordinateNodes(resp, req)
+		if err != nil {
+			r.Fatalf("err: %v", err)
+		}
 
-	coordinates = obj.(structs.Coordinates)
-	if len(coordinates) != 1 || coordinates[0].Node != "foo" {
-		t.Fatalf("bad: %v", coordinates)
-	}
+		if resp.Code != http.StatusOK {
+			r.Fatalf("bad: %v", resp.Code)
+		}
 
+		coordinates, ok := obj.(structs.Coordinates)
+		if !ok {
+			r.Fatalf("expected: structs.Coordinates, received: %+v", obj)
+		}
+		if len(coordinates) != 1 || coordinates[0].Node != "foo" {
+			r.Fatalf("expected: foo received: %v", coordinates)
+		}
+	})
 	// Make sure the empty filter works
 	req, _ = http.NewRequest("GET", "/v1/coordinate/nodes?segment=", nil)
 	resp = httptest.NewRecorder()
-	obj, err = a.srv.CoordinateNodes(resp, req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	retry.Run(t, func(r *retry.R) {
+		obj, err := a.srv.CoordinateNodes(resp, req)
+		if err != nil {
+			r.Fatalf("err: %v", err)
+		}
 
-	coordinates = obj.(structs.Coordinates)
-	if len(coordinates) != 1 || coordinates[0].Node != "bar" {
-		t.Fatalf("bad: %v", coordinates)
-	}
+		coordinates, ok := obj.(structs.Coordinates)
+		if !ok {
+			r.Fatalf("expected: structs.Coordinates, received: %+v", obj)
+		}
+		if len(coordinates) != 1 || coordinates[0].Node != "bar" {
+			r.Fatalf("expected: bar received: %v", coordinates)
+		}
+	})
 }
 
 func TestCoordinate_Node(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), "")
+	a := NewTestAgent(t, t.Name(), "")
 	defer a.Shutdown()
-	testrpc.WaitForLeader(t, a.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
 	// Make sure we get a 404 with no coordinates.
 	req, _ := http.NewRequest("GET", "/v1/coordinate/node/foo?dc=dc1", nil)
@@ -193,6 +240,7 @@ func TestCoordinate_Node(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
+
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("bad: %v", resp.Code)
 	}
@@ -242,6 +290,10 @@ func TestCoordinate_Node(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
+	if resp.Code != http.StatusOK {
+		t.Fatalf("bad: %v", resp.Code)
+	}
+
 	coordinates := obj.(structs.Coordinates)
 	if len(coordinates) != 1 ||
 		coordinates[0].Node != "foo" {
@@ -267,6 +319,10 @@ func TestCoordinate_Node(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
+	if resp.Code != http.StatusOK {
+		t.Fatalf("bad: %v", resp.Code)
+	}
+
 	coordinates = obj.(structs.Coordinates)
 	if len(coordinates) != 1 || coordinates[0].Node != "foo" {
 		t.Fatalf("bad: %v", coordinates)
@@ -286,8 +342,9 @@ func TestCoordinate_Node(t *testing.T) {
 
 func TestCoordinate_Update(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), "")
+	a := NewTestAgent(t, t.Name(), "")
 	defer a.Shutdown()
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
 	// Register the node.
 	reg := structs.RegisterRequest{
@@ -314,6 +371,11 @@ func TestCoordinate_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("bad: %v", resp.Code)
+	}
+
 	time.Sleep(300 * time.Millisecond)
 
 	// Query back and check the coordinates are present.
@@ -332,8 +394,9 @@ func TestCoordinate_Update(t *testing.T) {
 
 func TestCoordinate_Update_ACLDeny(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t.Name(), TestACLConfig())
+	a := NewTestAgent(t, t.Name(), TestACLConfig())
 	defer a.Shutdown()
+	testrpc.WaitForLeader(t, a.RPC, "dc1")
 
 	coord := coordinate.NewCoordinate(coordinate.DefaultConfig())
 	coord.Height = -5.0

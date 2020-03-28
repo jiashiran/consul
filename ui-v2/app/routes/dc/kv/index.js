@@ -12,7 +12,7 @@ export default Route.extend(WithKvActions, {
       replace: true,
     },
   },
-  repo: service('kv'),
+  repo: service('repository/kv'),
   beforeModel: function() {
     // we are index or folder, so if the key doesn't have a trailing slash
     // add one to force a fake findBySlug
@@ -25,16 +25,22 @@ export default Route.extend(WithKvActions, {
   model: function(params) {
     let key = params.key || '/';
     const dc = this.modelFor('dc').dc.Name;
-    const repo = get(this, 'repo');
+    const nspace = this.modelFor('nspace').nspace.substr(1);
     return hash({
       isLoading: false,
-      parent: repo.findBySlug(key, dc),
+      parent: this.repo.findBySlug(key, dc, nspace),
     }).then(model => {
       return hash({
         ...model,
         ...{
-          items: repo.findAllBySlug(get(model.parent, 'Key'), dc).catch(e => {
-            return this.transitionTo('dc.kv.index');
+          items: this.repo.findAllBySlug(get(model.parent, 'Key'), dc, nspace).catch(e => {
+            const status = get(e, 'errors.firstObject.status');
+            switch (status) {
+              case '403':
+                return this.transitionTo('dc.acls.tokens');
+              default:
+                return this.transitionTo('dc.kv.index');
+            }
           }),
         },
       });
@@ -49,7 +55,6 @@ export default Route.extend(WithKvActions, {
     },
   },
   setupController: function(controller, model) {
-    this._super(...arguments);
     controller.setProperties(model);
   },
 });

@@ -6,7 +6,10 @@ import (
 	"strings"
 
 	"github.com/hashicorp/consul/agent/metadata"
+	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/lib"
+	"github.com/hashicorp/consul/logging"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/serf/serf"
 )
 
@@ -23,12 +26,27 @@ func (c *Client) setupSerf(conf *serf.Config, ch chan serf.Event, path string) (
 	conf.Tags["vsn_min"] = fmt.Sprintf("%d", ProtocolVersionMin)
 	conf.Tags["vsn_max"] = fmt.Sprintf("%d", ProtocolVersionMax)
 	conf.Tags["build"] = c.config.Build
-	if c.logger == nil {
-		conf.MemberlistConfig.LogOutput = c.config.LogOutput
-		conf.LogOutput = c.config.LogOutput
+	if c.acls.ACLsEnabled() {
+		// we start in legacy mode and then transition to normal
+		// mode once we know the cluster can handle it.
+		conf.Tags["acls"] = string(structs.ACLModeLegacy)
+	} else {
+		conf.Tags["acls"] = string(structs.ACLModeDisabled)
 	}
-	conf.MemberlistConfig.Logger = c.logger
-	conf.Logger = c.logger
+
+	// We use the Intercept variant here to ensure that serf and memberlist logs
+	// can be streamed via the monitor endpoint
+	serfLogger := c.logger.
+		NamedIntercept(logging.Serf).
+		NamedIntercept(logging.LAN).
+		StandardLoggerIntercept(&hclog.StandardLoggerOptions{InferLevels: true})
+	memberlistLogger := c.logger.
+		NamedIntercept(logging.Memberlist).
+		NamedIntercept(logging.LAN).
+		StandardLoggerIntercept(&hclog.StandardLoggerOptions{InferLevels: true})
+
+	conf.MemberlistConfig.Logger = memberlistLogger
+	conf.Logger = serfLogger
 	conf.EventCh = ch
 	conf.ProtocolVersion = protocolVersionMap[c.config.ProtocolVersion]
 	conf.RejoinAfterLeave = c.config.RejoinAfterLeave
@@ -44,6 +62,8 @@ func (c *Client) setupSerf(conf *serf.Config, ch chan serf.Event, path string) (
 		return nil, err
 	}
 
+	c.addEnterpriseSerfTags(conf.Tags)
+
 	return serf.Create(conf)
 }
 
@@ -53,7 +73,10 @@ func (c *Client) lanEventHandler() {
 	for {
 		numQueuedEvents = len(c.eventCh)
 		if numQueuedEvents > serfEventBacklogWarning {
-			c.logger.Printf("[WARN] consul: number of queued serf events above warning threshold: %d/%d", numQueuedEvents, serfEventBacklogWarning)
+			c.logger.Warn("number of queued serf events above warning threshold",
+				"queued_events", numQueuedEvents,
+				"warning_threshold", serfEventBacklogWarning,
+			)
 		}
 
 		select {
@@ -61,15 +84,15 @@ func (c *Client) lanEventHandler() {
 			switch e.EventType() {
 			case serf.EventMemberJoin:
 				c.nodeJoin(e.(serf.MemberEvent))
-			case serf.EventMemberLeave, serf.EventMemberFailed:
+			case serf.EventMemberLeave, serf.EventMemberFailed, serf.EventMemberReap:
 				c.nodeFail(e.(serf.MemberEvent))
 			case serf.EventUser:
 				c.localEvent(e.(serf.UserEvent))
 			case serf.EventMemberUpdate: // Ignore
-			case serf.EventMemberReap: // Ignore
+				c.nodeUpdate(e.(serf.MemberEvent))
 			case serf.EventQuery: // Ignore
 			default:
-				c.logger.Printf("[WARN] consul: unhandled LAN Serf Event: %#v", e)
+				c.logger.Warn("unhandled LAN Serf Event", "event", e)
 			}
 		case <-c.shutdownCh:
 			return
@@ -85,17 +108,38 @@ func (c *Client) nodeJoin(me serf.MemberEvent) {
 			continue
 		}
 		if parts.Datacenter != c.config.Datacenter {
-			c.logger.Printf("[WARN] consul: server %s for datacenter %s has joined wrong cluster",
-				m.Name, parts.Datacenter)
+			c.logger.Warn("server has joined the wrong cluster: wrong datacenter",
+				"server", m.Name,
+				"datacenter", parts.Datacenter,
+			)
 			continue
 		}
-		c.logger.Printf("[INFO] consul: adding server %s", parts)
+		c.logger.Info("adding server", "server", parts)
 		c.routers.AddServer(parts)
 
 		// Trigger the callback
 		if c.config.ServerUp != nil {
 			c.config.ServerUp()
 		}
+	}
+}
+
+// nodeUpdate is used to handle update events on the serf cluster
+func (c *Client) nodeUpdate(me serf.MemberEvent) {
+	for _, m := range me.Members {
+		ok, parts := metadata.IsConsulServer(m)
+		if !ok {
+			continue
+		}
+		if parts.Datacenter != c.config.Datacenter {
+			c.logger.Warn("server has joined the wrong cluster: wrong datacenter",
+				"server", m.Name,
+				"datacenter", parts.Datacenter,
+			)
+			continue
+		}
+		c.logger.Info("updating server", "server", parts.String())
+		c.routers.AddServer(parts)
 	}
 }
 
@@ -106,7 +150,7 @@ func (c *Client) nodeFail(me serf.MemberEvent) {
 		if !ok {
 			continue
 		}
-		c.logger.Printf("[INFO] consul: removing server %s", parts)
+		c.logger.Info("removing server", "server", parts.String())
 		c.routers.RemoveServer(parts)
 	}
 }
@@ -120,7 +164,7 @@ func (c *Client) localEvent(event serf.UserEvent) {
 
 	switch name := event.Name; {
 	case name == newLeaderEvent:
-		c.logger.Printf("[INFO] consul: New leader elected: %s", event.Payload)
+		c.logger.Info("New leader elected", "payload", string(event.Payload))
 
 		// Trigger the callback
 		if c.config.ServerUp != nil {
@@ -128,7 +172,7 @@ func (c *Client) localEvent(event serf.UserEvent) {
 		}
 	case isUserEvent(name):
 		event.Name = rawUserEventName(name)
-		c.logger.Printf("[DEBUG] consul: user event: %s", event.Name)
+		c.logger.Debug("user event", "name", event.Name)
 
 		// Trigger the callback
 		if c.config.UserEventHandler != nil {
@@ -136,7 +180,7 @@ func (c *Client) localEvent(event serf.UserEvent) {
 		}
 	default:
 		if !c.handleEnterpriseUserEvents(event) {
-			c.logger.Printf("[WARN] consul: Unhandled local event: %v", event)
+			c.logger.Warn("Unhandled local event", "event", event)
 		}
 	}
 }

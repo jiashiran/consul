@@ -34,6 +34,7 @@ func TestNodeService(t testing.T) *NodeService {
 	return &NodeService{
 		Kind:    ServiceKindTypical,
 		Service: "web",
+		Port:    8080,
 	}
 }
 
@@ -41,10 +42,75 @@ func TestNodeService(t testing.T) *NodeService {
 // Connect proxy.
 func TestNodeServiceProxy(t testing.T) *NodeService {
 	return &NodeService{
-		Kind:             ServiceKindConnectProxy,
-		Service:          "connect-proxy",
-		Address:          "127.0.0.2",
-		Port:             2222,
-		ProxyDestination: "web",
+		Kind:    ServiceKindConnectProxy,
+		Service: "web-proxy",
+		Address: "127.0.0.2",
+		Port:    2222,
+		Proxy:   TestConnectProxyConfig(t),
+	}
+}
+
+func TestNodeServiceExpose(t testing.T) *NodeService {
+	return &NodeService{
+		Kind:    ServiceKindConnectProxy,
+		Service: "test-svc",
+		Address: "localhost",
+		Port:    8080,
+		Proxy: ConnectProxyConfig{
+			DestinationServiceName: "web",
+			Expose: ExposeConfig{
+				Paths: []ExposePath{
+					{
+						Path:          "/foo",
+						LocalPathPort: 8080,
+						ListenerPort:  21500,
+					},
+					{
+						Path:          "/bar",
+						LocalPathPort: 8080,
+						ListenerPort:  21501,
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestNodeServiceMeshGateway returns a *NodeService representing a valid Mesh Gateway
+func TestNodeServiceMeshGateway(t testing.T) *NodeService {
+	return TestNodeServiceMeshGatewayWithAddrs(t,
+		"10.1.2.3",
+		8443,
+		ServiceAddress{Address: "10.1.2.3", Port: 8443},
+		ServiceAddress{Address: "198.18.4.5", Port: 443})
+}
+
+func TestNodeServiceMeshGatewayWithAddrs(t testing.T, address string, port int, lanAddr, wanAddr ServiceAddress) *NodeService {
+	return &NodeService{
+		Kind:    ServiceKindMeshGateway,
+		Service: "mesh-gateway",
+		Address: address,
+		Port:    port,
+		Proxy: ConnectProxyConfig{
+			Config: map[string]interface{}{
+				"foo": "bar",
+			},
+		},
+		TaggedAddresses: map[string]ServiceAddress{
+			TaggedAddressLAN: lanAddr,
+			TaggedAddressWAN: wanAddr,
+		},
+	}
+}
+
+// TestNodeServiceSidecar returns a *NodeService representing a service
+// registration with a nested Sidecar registration.
+func TestNodeServiceSidecar(t testing.T) *NodeService {
+	return &NodeService{
+		Service: "web",
+		Port:    2222,
+		Connect: ServiceConnect{
+			SidecarService: &ServiceDefinition{},
+		},
 	}
 }

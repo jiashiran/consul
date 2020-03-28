@@ -3,16 +3,19 @@ package connect
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/consul/agent/connect"
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/go-hclog"
 )
 
 // parseLeafX509Cert will parse an X509 certificate
@@ -107,6 +110,33 @@ func devTLSConfigFromFiles(caFile, certFile,
 	return cfg, nil
 }
 
+// PKIXNameFromRawSubject attempts to parse a DER encoded "Subject" as a PKIX
+// Name. It's useful for inspecting root certificates in an x509.CertPool which
+// only expose RawSubject via the Subjects method.
+func PKIXNameFromRawSubject(raw []byte) (*pkix.Name, error) {
+	var subject pkix.RDNSequence
+	if _, err := asn1.Unmarshal(raw, &subject); err != nil {
+		return nil, err
+	}
+	var name pkix.Name
+	name.FillFromRDNSequence(&subject)
+	return &name, nil
+}
+
+// CommonNamesFromCertPool returns the common names of the certificates in the
+// cert pool.
+func CommonNamesFromCertPool(p *x509.CertPool) ([]string, error) {
+	var names []string
+	for _, rawSubj := range p.Subjects() {
+		n, err := PKIXNameFromRawSubject(rawSubj)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, n.CommonName)
+	}
+	return names, nil
+}
+
 // CertURIFromConn is a helper to extract the service identifier URI from a
 // net.Conn. If the net.Conn is not a *tls.Conn then an error is always
 // returned. If the *tls.Conn didn't present a valid connect certificate, or is
@@ -145,7 +175,7 @@ func extractCertURI(certs []*x509.Certificate) (*url.URL, error) {
 	return cert.URIs[0], nil
 }
 
-// verifyServerCertMatchesURI is used on tls connections dialled to a connect
+// verifyServerCertMatchesURI is used on tls connections dialed to a connect
 // server to ensure that the certificate it presented has the correct identity.
 func verifyServerCertMatchesURI(certs []*x509.Certificate,
 	expected connect.CertURI) error {
@@ -156,12 +186,17 @@ func verifyServerCertMatchesURI(certs []*x509.Certificate,
 		return errors.New("peer certificate mismatch")
 	}
 
-	// We may want to do better than string matching later in some special
-	// cases and/or encapsulate the "match" logic inside the CertURI
-	// implementation but for now this is all we need.
-	if gotURI.String() == expectedStr {
+	// Override the hostname since we rely on x509 constraints to limit ability to
+	// spoof the trust domain if needed (i.e. because a root is shared with other
+	// PKI or Consul clusters). This allows for seamless migrations between trust
+	// domains.
+	expectURI := expected.URI()
+	expectURI.Host = gotURI.Host
+	if strings.ToLower(gotURI.String()) == strings.ToLower(expectURI.String()) {
+		// OK!
 		return nil
 	}
+
 	return fmt.Errorf("peer certificate mismatch got %s, want %s",
 		gotURI.String(), expectedStr)
 }
@@ -170,29 +205,29 @@ func verifyServerCertMatchesURI(certs []*x509.Certificate,
 // api.Client to verify the TLS chain and perform AuthZ for the server end of
 // the connection. The service name provided is used as the target service name
 // for the Authorization.
-func newServerSideVerifier(client *api.Client, serviceName string) verifierFunc {
+func newServerSideVerifier(logger hclog.Logger, client *api.Client, serviceName string) verifierFunc {
 	return func(tlsCfg *tls.Config, rawCerts [][]byte) error {
 		leaf, err := verifyChain(tlsCfg, rawCerts, false)
 		if err != nil {
-			log.Printf("connect: failed TLS verification: %s", err)
+			logger.Error("failed TLS verification", "error", err)
 			return err
 		}
 
 		// Check leaf is a cert we understand
 		if len(leaf.URIs) < 1 {
-			log.Printf("connect: invalid leaf certificate")
+			logger.Error("invalid leaf certificate: no URIs set")
 			return errors.New("connect: invalid leaf certificate")
 		}
 
 		certURI, err := connect.ParseCertURI(leaf.URIs[0])
 		if err != nil {
-			log.Printf("connect: invalid leaf certificate URI")
+			logger.Error("invalid leaf certificate URI", "error", err)
 			return errors.New("connect: invalid leaf certificate URI")
 		}
 
 		// No AuthZ if there is no client.
 		if client == nil {
-			log.Printf("connect: nil client")
+			logger.Info("nil client provided")
 			return nil
 		}
 
@@ -200,15 +235,15 @@ func newServerSideVerifier(client *api.Client, serviceName string) verifierFunc 
 		req := &api.AgentAuthorizeParams{
 			Target:           serviceName,
 			ClientCertURI:    certURI.URI().String(),
-			ClientCertSerial: connect.HexString(leaf.SerialNumber.Bytes()),
+			ClientCertSerial: connect.EncodeSerialNumber(leaf.SerialNumber),
 		}
 		resp, err := client.Agent().ConnectAuthorize(req)
 		if err != nil {
-			log.Printf("connect: authz call failed: %s", err)
+			logger.Error("authz call failed", "error", err)
 			return errors.New("connect: authz call failed: " + err.Error())
 		}
 		if !resp.Authorized {
-			log.Printf("connect: authz call denied: %s", resp.Reason)
+			logger.Error("authz call denied", "reason", resp.Reason)
 			return errors.New("connect: authz denied: " + resp.Reason)
 		}
 		return nil
@@ -218,7 +253,7 @@ func newServerSideVerifier(client *api.Client, serviceName string) verifierFunc 
 // clientSideVerifier is a verifierFunc that performs verification of certificates
 // on the client end of the connection. For now it is just basic TLS
 // verification since the identity check needs additional state and becomes
-// clunky to customise the callback for every outgoing request. That is done
+// clunky to customize the callback for every outgoing request. That is done
 // within Service.Dial for now.
 func clientSideVerifier(tlsCfg *tls.Config, rawCerts [][]byte) error {
 	_, err := verifyChain(tlsCfg, rawCerts, true)
@@ -268,10 +303,10 @@ func verifyChain(tlsCfg *tls.Config, rawCerts [][]byte, client bool) (*x509.Cert
 
 // dynamicTLSConfig represents the state for returning a tls.Config that can
 // have root and leaf certificates updated dynamically with all existing clients
-// and servers automatically picking up the changes. It requires initialising
+// and servers automatically picking up the changes. It requires initializing
 // with a valid base config from which all the non-certificate and verification
 // params are used. The base config passed should not be modified externally as
-// it is assumed to be serialised by the embedded mutex.
+// it is assumed to be serialized by the embedded mutex.
 type dynamicTLSConfig struct {
 	base *tls.Config
 
@@ -291,7 +326,7 @@ type tlsCfgUpdate struct {
 // newDynamicTLSConfig returns a dynamicTLSConfig constructed from base.
 // base.Certificates[0] is used as the initial leaf and base.RootCAs is used as
 // the initial roots.
-func newDynamicTLSConfig(base *tls.Config, logger *log.Logger) *dynamicTLSConfig {
+func newDynamicTLSConfig(base *tls.Config, logger hclog.Logger) *dynamicTLSConfig {
 	cfg := &dynamicTLSConfig{
 		base: base,
 	}
@@ -300,7 +335,7 @@ func newDynamicTLSConfig(base *tls.Config, logger *log.Logger) *dynamicTLSConfig
 		// If this does error then future calls to Ready will fail
 		// It is better to handle not-Ready rather than failing
 		if err := parseLeafX509Cert(cfg.leaf); err != nil && logger != nil {
-			logger.Printf("[ERR] Error parsing configured leaf certificate: %v", err)
+			logger.Error("error parsing configured leaf certificate", "error", err)
 		}
 	}
 	if base.RootCAs != nil {

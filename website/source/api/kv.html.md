@@ -33,13 +33,14 @@ For multi-key reads, please consider using [transaction](/api/txn.html).
 | `GET`  | `/kv/:key`                   | `application/json`         |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required |
-| ---------------- | ----------------- | ------------ |
-| `YES`            | `all`             | `key:read`   |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required |
+| ---------------- | ----------------- | ------------- | ------------ |
+| `YES`            | `all`             | `none`        | `key:read`   |
 
 ### Parameters
 
@@ -61,9 +62,17 @@ The table below shows this endpoint's support for
   metadata). Specifying this implies `recurse`. This is specified as part of the
   URL as a query parameter.
 
-- `separator` `(string: '/')` - Specifies the character to use as a separator
-  for recursive lookups. This is specified as part of the URL as a query
-  parameter.
+- `separator` `(string: "")` - Specifies the string to use as a separator
+  for recursive key lookups. This option is only used when paired with the `keys` 
+  parameter to limit the prefix of keys returned,  only up to the given separator. 
+  This is specified as part of the URL as a query parameter.
+
+- `ns` `(string: "")` - **(Enterprise Only)** Specifies the namespace to query.
+  If not provided, the namespace will be inferred from the request's ACL token,
+  or will default to the `default` namespace. This is specified as part of the
+  This is specified as part of the URL as a query parameter. 
+  For recursive lookups, the namespace may be specified as '*' and then results 
+  will be returned for all namespaces. Added in Consul 1.7.0.
 
 ### Sample Request
 
@@ -143,7 +152,8 @@ response)
 
 ## Create/Update Key
 
-This endpoint
+This endpoint updates the value of the specified key. If no key exists at the given
+path, the key will be created.
 
 | Method | Path                         | Produces                   |
 | ------ | ---------------------------- | -------------------------- |
@@ -153,17 +163,18 @@ Even though the return type is `application/json`, the value is either `true` or
 `false`, indicating whether the create/update succeeded.
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required |
-| ---------------- | ----------------- | ------------ |
-| `NO`             | `none`            | `key:write`  |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required |
+| ---------------- | ----------------- | ------------- | ------------ |
+| `NO`             | `none`            | `none`        | `key:write`  |
 
 ### Parameters
 
-- `key` `(string: "")` - Specifies the path of the key to read.
+- `key` `(string: "")` - Specifies the path of the key.
 
 - `dc` `(string: "")` - Specifies the datacenter to query. This will default to
   the datacenter of the agent being queried. This is specified as part of the
@@ -179,8 +190,8 @@ The table below shows this endpoint's support for
   index is non-zero, the key is only set if the index matches the `ModifyIndex`
   of that key.
 
-- `acquire` `(string: "")` - Specifies to use a lock acquisition operation. This
-  is useful as it allows leader election to be built on top of Consul. If the
+- `acquire` `(string: "")` - Supply a session ID to use in a lock acquisition operation.
+  This is useful as it allows leader election to be built on top of Consul. If the
   lock is not held and the session is valid, this increments the `LockIndex` and
   sets the `Session` value of the key in addition to updating the key contents.
   A key does not need to exist to be acquired. If the lock is already held by
@@ -191,12 +202,17 @@ The table below shows this endpoint's support for
   session has locked the key.**
 
     For an example of how to use the lock feature, see the [Leader Election Guide]
-    (/docs/guides/leader-election.html).
+    (https://learn.hashicorp.com/consul/developer-configuration/elections).
 
-- `release` `(string: "")` - Specifies to use a lock release operation. This is
+- `release` `(string: "")` - Supply a session ID to use in a release operation. This is
   useful when paired with `?acquire=` as it allows clients to yield a lock. This
   will leave the `LockIndex` unmodified but will clear the associated `Session`
   of the key. The key must be held by this session to be unlocked.
+
+- `ns` `(string: "")` - **(Enterprise Only)** Specifies the namespace to query.
+  If not provided, the namespace will be inferred from the request's ACL token,
+  or will default to the `default` namespace. This is specified as part of the
+  URL as a query parameter. Added in Consul 1.7.0.
 
 ### Sample Payload
 
@@ -233,13 +249,14 @@ This endpoint deletes a single key or all keys sharing a prefix.
 | `DELETE` | `/kv/:key`                   | `application/json`         |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required |
-| ---------------- | ----------------- | ------------ |
-| `NO`             | `none`            | `key:write`  |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required |
+| ---------------- | ----------------- | ------------- | ------------ |
+| `NO`             | `none`            | `none`        | `key:write`  |
 
 ### Parameters
 
@@ -252,6 +269,11 @@ The table below shows this endpoint's support for
   `PUT`, the index must be greater than 0 for Consul to take any action: a 0
   index will not delete the key. If the index is non-zero, the key is only
   deleted if the index matches the `ModifyIndex` of that key.
+
+- `ns` `(string: "")` - **(Enterprise Only)** Specifies the namespace to query.
+  If not provided, the namespace will be inferred from the request's ACL token,
+  or will default to the `default` namespace. This is specified as part of the
+  URL as a query parameter. Added in Consul 1.7.0.
 
 ### Sample Request
 

@@ -31,13 +31,14 @@ restore.
 | `GET`  | `/snapshot`                  | `200 application/x-gzip`   |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required |
-| ---------------- | ----------------- | ------------ |
-| `NO`             | `default,stale`   | `management` |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required |
+| ---------------- | ----------------- | ------------- | ------------ |
+| `NO`             | `default,stale`   | `none`        | `management` |
 
 ### Parameters
 
@@ -85,13 +86,14 @@ call to the `GET` method.
 | `PUT`  | `/snapshot`                  | `200 text/plain (empty body)` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required |
-| ---------------- | ----------------- | ------------ |
-| `NO`             | `none`            | `management` |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required |
+| ---------------- | ----------------- | ------------- | ------------ |
+| `NO`             | `none`            | `none`        | `management` |
 ### Parameters
 
 - `dc` `(string: "")` - Specifies the datacenter to query. This will default
@@ -103,7 +105,7 @@ The table below shows this endpoint's support for
 ```text
 $ curl \
     --request PUT \
-    --data-binary @snapshot \
+    --data-binary @snapshot.tgz \
     http://127.0.0.1:8500/v1/snapshot
 ```
 

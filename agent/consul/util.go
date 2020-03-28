@@ -6,9 +6,13 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/consul/agent/metadata"
+	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/go-version"
+	"github.com/hashicorp/hil"
+	"github.com/hashicorp/hil/ast"
 	"github.com/hashicorp/serf/serf"
 )
 
@@ -272,13 +276,123 @@ func runtimeStats() map[string]string {
 // ServersMeetMinimumVersion returns whether the given alive servers are at least on the
 // given Consul version
 func ServersMeetMinimumVersion(members []serf.Member, minVersion *version.Version) bool {
+	return ServersMeetRequirements(members, func(srv *metadata.Server) bool {
+		return srv.Status != serf.StatusAlive || !srv.Build.LessThan(minVersion)
+	})
+}
+
+// ServersMeetMinimumVersion returns whether the given alive servers from a particular
+// datacenter are at least on the given Consul version. This requires at least 1 alive server in the DC
+func ServersInDCMeetMinimumVersion(members []serf.Member, datacenter string, minVersion *version.Version) (bool, bool) {
+	found := false
+	ok := ServersMeetRequirements(members, func(srv *metadata.Server) bool {
+		if srv.Status != serf.StatusAlive || srv.Datacenter != datacenter {
+			return true
+		}
+
+		found = true
+		return !srv.Build.LessThan(minVersion)
+	})
+
+	return ok, found
+}
+
+// ServersMeetRequirements returns whether the given server members meet the requirements as defined by the
+// callback function
+func ServersMeetRequirements(members []serf.Member, meetsRequirements func(*metadata.Server) bool) bool {
 	for _, member := range members {
-		if valid, parts := metadata.IsConsulServer(member); valid && parts.Status == serf.StatusAlive {
-			if parts.Build.LessThan(minVersion) {
+		if valid, parts := metadata.IsConsulServer(member); valid {
+			if !meetsRequirements(parts) {
 				return false
 			}
 		}
 	}
 
 	return true
+}
+
+func ServersGetACLMode(members []serf.Member, leader string, datacenter string) (numServers int, mode structs.ACLMode, leaderMode structs.ACLMode) {
+	numServers = 0
+	mode = structs.ACLModeEnabled
+	leaderMode = structs.ACLModeUnknown
+	for _, member := range members {
+		if valid, parts := metadata.IsConsulServer(member); valid {
+
+			if datacenter != "" && parts.Datacenter != datacenter {
+				continue
+			}
+
+			if parts.Status != serf.StatusAlive && parts.Status != serf.StatusFailed {
+				// ignore any server that isn't alive or failed. We are considering failed
+				// because in this state there is a reasonable expectation that they could
+				// become stable again. Also autopilot should remove dead servers if they
+				// are truly gone.
+				continue
+			}
+
+			numServers += 1
+
+			if memberAddr := (&net.TCPAddr{IP: member.Addr, Port: parts.Port}).String(); memberAddr == leader {
+				leaderMode = parts.ACLs
+			}
+
+			switch parts.ACLs {
+			case structs.ACLModeDisabled:
+				// anything disabled means we cant enable ACLs
+				mode = structs.ACLModeDisabled
+			case structs.ACLModeEnabled:
+				// do nothing
+			case structs.ACLModeLegacy:
+				// This covers legacy mode and older server versions that don't advertise ACL support
+				if mode != structs.ACLModeDisabled && mode != structs.ACLModeUnknown {
+					mode = structs.ACLModeLegacy
+				}
+			default:
+				if mode != structs.ACLModeDisabled {
+					mode = structs.ACLModeUnknown
+				}
+			}
+		}
+	}
+
+	return
+}
+
+// InterpolateHIL processes the string as if it were HIL and interpolates only
+// the provided string->string map as possible variables.
+func InterpolateHIL(s string, vars map[string]string) (string, error) {
+	if strings.Index(s, "${") == -1 {
+		// Skip going to the trouble of parsing something that has no HIL.
+		return s, nil
+	}
+
+	tree, err := hil.Parse(s)
+	if err != nil {
+		return "", err
+	}
+
+	vm := make(map[string]ast.Variable)
+	for k, v := range vars {
+		vm[k] = ast.Variable{
+			Type:  ast.TypeString,
+			Value: v,
+		}
+	}
+
+	config := &hil.EvalConfig{
+		GlobalScope: &ast.BasicScope{
+			VarMap: vm,
+		},
+	}
+
+	result, err := hil.Eval(tree, config)
+	if err != nil {
+		return "", err
+	}
+
+	if result.Type != hil.TypeString {
+		return "", fmt.Errorf("generated unexpected hil type: %s", result.Type)
+	}
+
+	return result.Value.(string), nil
 }

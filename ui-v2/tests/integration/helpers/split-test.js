@@ -1,20 +1,17 @@
-import { moduleForComponent, skip } from 'ember-qunit';
+import { module, test } from 'qunit';
+import { setupRenderingTest } from 'ember-qunit';
+import { render } from '@ember/test-helpers';
 import hbs from 'htmlbars-inline-precompile';
 
-moduleForComponent('split', 'helper:split', {
-  integration: true,
-});
+module('helper:split', function(hooks) {
+  setupRenderingTest(hooks);
 
-// Replace this with your real tests.
-skip('it renders', function(assert) {
-  this.set('inputValue', '1234');
+  // Replace this with your real tests.
+  test('it renders', async function(assert) {
+    this.set('inputValue', 'a,string,split,by,a,comma');
 
-  this.render(hbs`{{split inputValue}}`);
+    await render(hbs`{{split inputValue}}`);
 
-  assert.equal(
-    this.$()
-      .text()
-      .trim(),
-    '1234'
-  );
+    assert.dom('*').hasText('a,string,split,by,a,comma');
+  });
 });

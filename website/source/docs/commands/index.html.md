@@ -26,26 +26,33 @@ $ consul
 Usage: consul [--version] [--help] <command> [<args>]
 
 Available commands are:
+    acl            Interact with Consul's ACLs
     agent          Runs a Consul agent
     catalog        Interact with the catalog
+    connect        Interact with Consul Connect
+    debug          Records a debugging archive for operators
     event          Fire a new event
     exec           Executes a command on Consul nodes
     force-leave    Forces a member of the cluster to enter the "left" state
     info           Provides debugging information for operators.
+    intention      Interact with Connect service intentions
     join           Tell Consul agent to join cluster
     keygen         Generates a new encryption key
     keyring        Manages gossip layer encryption keys
     kv             Interact with the key-value store
     leave          Gracefully leaves the Consul cluster and shuts down
-    license        Get/Put the Consul Enterprise license (Enterprise-only)
     lock           Execute a command holding a lock
+    login          Login to Consul using an auth method
+    logout         Destroy a Consul token created with login
     maint          Controls node or service maintenance mode
     members        Lists the members of a Consul cluster
     monitor        Stream logs from a Consul agent
     operator       Provides cluster-level tools for Consul operators
     reload         Triggers the agent to reload configuration files
     rtt            Estimates network round trip time between nodes
+    services       Interact with services
     snapshot       Saves, restores and inspects snapshots of Consul server state
+    tls            Builtin helpers for creating CAs and certificates
     validate       Validate config files/directories
     version        Prints the Consul version
     watch          Watch for changes in Consul
@@ -110,10 +117,10 @@ particularly with configuration management and init systems.
 
 These environment variables and their purpose are described below:
 
-## `CONSUL_HTTP_ADDR`
+### `CONSUL_HTTP_ADDR`
 
 This is the HTTP API address to the *local* Consul agent
-(not the remote server) specified as a URI:
+(not the remote server) specified as a URI with optional scheme:
 
 ```
 CONSUL_HTTP_ADDR=127.0.0.1:8500
@@ -122,8 +129,10 @@ CONSUL_HTTP_ADDR=127.0.0.1:8500
 or as a Unix socket path:
 
 ```
-CONSUL_HTTP_ADDR=unix://var/run/consul_http.sock
+CONSUL_HTTP_ADDR=unix:///var/run/consul_http.sock
 ```
+
+If the `https://` scheme is used, `CONSUL_HTTP_SSL` is implied to be true.
 
 ### `CONSUL_HTTP_TOKEN`
 
@@ -132,6 +141,15 @@ are enabled, for example:
 
 ```
 CONSUL_HTTP_TOKEN=aba7cbe5-879b-999a-07cc-2efd9ac0ffe
+```
+
+### `CONSUL_HTTP_TOKEN_FILE`
+
+This is a path to a file containing the API access token required when access
+control lists (ACLs) are enabled, for example:
+
+```
+CONSUL_HTTP_TOKEN_FILE=/path/to/consul.token
 ```
 
 ### `CONSUL_HTTP_AUTH`
@@ -153,8 +171,9 @@ CONSUL_HTTP_SSL=true
 
 ### `CONSUL_HTTP_SSL_VERIFY`
 
-This is a boolean value (default true) to specify SSL certificate verification; setting this value to `false` is not recommended for production use. Example
-for development purposes:
+This is a boolean value (default true) to specify SSL certificate verification;
+setting this value to `false` is not recommended for production use. Example for
+development purposes:
 
 ```
 CONSUL_HTTP_SSL_VERIFY=false
@@ -199,3 +218,26 @@ The server name to use as the SNI host when connecting via TLS.
 ```
 CONSUL_TLS_SERVER_NAME=consulserver.domain
 ```
+
+### `CONSUL_GRPC_ADDR`
+
+Like [`CONSUL_HTTP_ADDR`](#consul_http_addr) but configures the address the
+local agent is listening for gRPC requests. Currently gRPC is only used for
+integrating [Envoy proxy](/docs/connect/proxies/envoy.html) and must be [enabled
+explicitly](/docs/agent/options.html#grpc_port) in agent configuration.
+
+```
+CONSUL_GRPC_ADDR=127.0.0.1:8502
+```
+
+or as a Unix socket path:
+
+```
+CONSUL_GRPC_ADDR=unix://var/run/consul_grpc.sock
+```
+
+If the agent is [configured with TLS
+certificates](/docs/agent/encryption.html#rpc-encryption-with-tls), then the
+gRPC listener will require TLS and present the same certificate as the https
+listener. As with `CONSUL_HTTP_ADDR`, if TLS is enabled either the `https://`
+scheme should be used, or `CONSUL_HTTP_SSL` set.

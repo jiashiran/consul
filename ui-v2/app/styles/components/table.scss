@@ -1,120 +1,96 @@
-@import './icons/index';
-td.folder {
-  @extend %with-folder;
-}
-td dt.passing {
-  @extend %with-passing;
-}
-td dt.warning {
-  @extend %with-warning;
-}
-td dt.critical {
-  @extend %with-critical;
-}
-table:not(.sessions) tr {
-  cursor: pointer;
-}
-th,
-td {
-  border-bottom: $decor-border-100;
-}
-td dt.passing,
-td dt.passing + dd {
-  color: $ui-color-success;
-}
-td dt.warning,
-td dt.warning + dd {
-  color: $ui-color-alert;
-}
-td dt.critical,
-td dt.critical + dd {
-  color: $ui-color-failure;
-}
-th {
-  color: $ui-gray-400 !important;
-}
-th {
-  border-color: $keyline-dark;
-}
-td {
-  border-color: $keyline-mid;
-}
+@import '../base/components/table/index';
+@import '../base/components/popover-menu/index';
 table {
-  width: 100%;
+  @extend %table, %table-flex;
 }
-td button {
-  position: relative;
-  top: -6px;
+
+%table-actions > [type='checkbox'] {
+  @extend %more-popover-menu;
 }
-th.actions input {
-  display: none;
+%table-actions .confirmation-alert {
+  @extend %confirmation-alert;
 }
-th.actions {
-  text-align: right;
-}
-td.actions .with-confirmation.confirming {
+%table-actions > [type='checkbox'] + label {
   position: absolute;
-  right: 0;
+  top: 8px;
+  right: 15px;
 }
-table th {
-  padding-bottom: 0.6em;
+
+html.template-service.template-list td:first-child a span,
+html.template-node.template-show #services td:first-child a span,
+html.template-service.template-show #instances td:first-child a span {
+  @extend %with-external-source-icon;
+  float: left;
+  margin-right: 10px;
+  margin-top: 2px;
 }
-table td,
-table td a {
-  padding: 0.9em 0;
+/* This nudges the th in for the external source icons */
+html.template-node.template-show #services th:first-child,
+html.template-service.template-show #instances th:first-child,
+html.template-service.template-list main th:first-child {
+  text-indent: 28px;
 }
-table th,
-table td:not(.actions),
-table td a {
-  padding-right: 0.9em;
+
+td.folder::before {
+  @extend %with-folder-outline-mask, %as-pseudo;
+  background-color: $gray-300;
+  margin-top: 1px;
+  margin-right: 5px;
+}
+table:not(.sessions) tbody tr {
+  cursor: pointer;
 }
 table:not(.sessions) td:first-child {
   padding: 0;
 }
-table td a {
-  display: block;
-}
-tbody {
-  overflow-x: visible !important;
-}
-th,
-td:not(.actions),
-td:not(.actions) a {
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-}
-// TODO: this isn't specific to table
-td dl {
-  height: 100%;
-}
-td dl {
-  display: flex;
-}
-td dl > * {
-  display: block;
-}
-td dt.zero {
-  display: none;
-}
-td dd.zero {
-  visibility: hidden;
-}
-td dt {
-  text-indent: -9000px;
-}
-td dt.warning {
+/* Header Tooltips/Icon*/
+th {
   overflow: visible;
 }
-td dt.warning::before {
-  top: 7px;
+th span::after {
+  @extend %with-info-circle-outline-icon, %as-pseudo;
+  opacity: 0.6;
 }
-td dt.warning::after {
-  left: -2px;
-  top: -1px;
+th span {
+  @extend %with-tooltip;
+  margin-left: 2px;
 }
-td dd {
-  box-sizing: content-box;
-  margin-left: 22px;
-  padding-right: 10px;
+th span em {
+  width: 250px;
+  font-style: normal;
+  white-space: normal !important;
+}
+/**/
+
+/* ideally these would be in route css files, but left here as they */
+/* accomplish the same thing (hide non-essential columns for tables) */
+@media #{$--lt-medium-table} {
+  /* Policy > Datacenters */
+  html.template-policy.template-list tr > :nth-child(2) {
+    display: none;
+  }
+  html.template-service.template-list tr > :nth-child(2) {
+    display: none;
+  }
+}
+@media #{$--lt-wide-table} {
+  /* hide actions on narrow screens, you can always click in do everything from there */
+  tr > .actions {
+    display: none;
+  }
+  html.template-intention.template-list tr > :nth-last-child(2) {
+    display: none;
+  }
+  html.template-service.template-list tr > :last-child {
+    display: none;
+  }
+  html.template-node.template-show #services tr > :last-child {
+    display: none;
+  }
+  html.template-node.template-show #lock-sessions tr > :not(:first-child):not(:last-child) {
+    display: none;
+  }
+  html.template-node.template-show #lock-sessions td:last-child {
+    padding: 0;
+  }
 }

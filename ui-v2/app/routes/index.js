@@ -4,10 +4,10 @@ import { hash } from 'rsvp';
 import { get } from '@ember/object';
 
 export default Route.extend({
-  repo: service('dc'),
+  repo: service('repository/dc'),
   model: function(params) {
     return hash({
-      item: get(this, 'repo').getActive(),
+      item: this.repo.getActive(),
     });
   },
   afterModel: function({ item }, transition) {

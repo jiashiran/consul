@@ -14,7 +14,7 @@ The `/operator/autopilot` endpoints allow for automatic operator-friendly
 management of Consul servers including cleanup of dead servers, monitoring
 the state of the Raft cluster, and stable server introduction.
 
-Please see the [Autopilot Guide](/docs/guides/autopilot.html) for more details.
+Please see the [Autopilot Guide](https://learn.hashicorp.com/consul/day-2-operations/autopilot) for more details.
 
 ## Read Configuration
 
@@ -25,13 +25,14 @@ This endpoint retrieves its latest Autopilot configuration.
 | `GET`  | `/operator/autopilot/configuration` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required    |
-| ---------------- | ----------------- | --------------- |
-| `NO`             | `none`            | `operator:read` |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required    |
+| ---------------- | ----------------- | ------------- | --------------- |
+| `NO`             | `none`            | `none`        | `operator:read` |
 
 ### Parameters
 
@@ -78,13 +79,14 @@ This endpoint updates the Autopilot configuration of the cluster.
 | `PUT`  | `/operator/autopilot/configuration` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required     |
-| ---------------- | ----------------- | ---------------- |
-| `NO`             | `none`            | `operator:write` |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required     |
+| ---------------- | ----------------- | ------------- | ---------------- |
+| `NO`             | `none`            | `none`        | `operator:write` |
 
 ### Parameters
 
@@ -105,6 +107,9 @@ The table below shows this endpoint's support for
 
 - `MaxTrailingLogs` `(int: 250)` specifies the maximum number of log entries
   that a server can trail the leader by before being considered unhealthy.
+
+- `MinQuorum` `(int: 0)` - specifies the minimum number of servers needed before
+  Autopilot can prune dead servers.
 
 - `ServerStabilizationTime` `(string: "10s")` - Specifies the minimum amount of
   time a server must be stable in the 'healthy' state before being added to the
@@ -132,6 +137,7 @@ The table below shows this endpoint's support for
   "CleanupDeadServers": true,
   "LastContactThreshold": "200ms",
   "MaxTrailingLogs": 250,
+  "MinQuorum": 3,
   "ServerStabilizationTime": "10s",
   "RedundancyZoneTag": "",
   "DisableUpgradeMigration": false,
@@ -150,13 +156,14 @@ This endpoint queries the health of the autopilot status.
 | `GET`  | `/operator/autopilot/health` | `application/json`         |
 
 The table below shows this endpoint's support for
-[blocking queries](/api/index.html#blocking-queries),
-[consistency modes](/api/index.html#consistency-modes), and
-[required ACLs](/api/index.html#acls).
+[blocking queries](/api/features/blocking.html),
+[consistency modes](/api/features/consistency.html),
+[agent caching](/api/features/caching.html), and
+[required ACLs](/api/index.html#authentication).
 
-| Blocking Queries | Consistency Modes | ACL Required    |
-| ---------------- | ----------------- | --------------- |
-| `NO`             | `none`            | `operator:read` |
+| Blocking Queries | Consistency Modes | Agent Caching | ACL Required    |
+| ---------------- | ----------------- | ------------- | --------------- |
+| `NO`             | `none`            | `none`        | `operator:read` |
 
 ### Parameters
 

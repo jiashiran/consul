@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/serf/serf"
 )
@@ -38,6 +39,9 @@ type Server struct {
 	RaftVersion  int
 	Addr         net.Addr
 	Status       serf.MemberStatus
+	NonVoter     bool
+	ACLs         structs.ACLMode
+	FeatureFlags map[string]int
 
 	// If true, use TLS when connecting to this server
 	UseTLS bool
@@ -91,8 +95,16 @@ func IsConsulServer(m serf.Member) (bool, *Server) {
 		return false, nil
 	}
 
+	var acls structs.ACLMode
+	if aclMode, ok := m.Tags["acls"]; ok {
+		acls = structs.ACLMode(aclMode)
+	} else {
+		acls = structs.ACLModeUnknown
+	}
+
 	segmentAddrs := make(map[string]string)
 	segmentPorts := make(map[string]int)
+	featureFlags := make(map[string]int)
 	for name, value := range m.Tags {
 		if strings.HasPrefix(name, "sl_") {
 			addr, port, err := net.SplitHostPort(value)
@@ -107,6 +119,13 @@ func IsConsulServer(m serf.Member) (bool, *Server) {
 			segmentName := strings.TrimPrefix(name, "sl_")
 			segmentAddrs[segmentName] = addr
 			segmentPorts[segmentName] = segmentPort
+		} else if strings.HasPrefix(name, "ft_") {
+			featureName := strings.TrimPrefix(name, "ft_")
+			featureState, err := strconv.Atoi(value)
+			if err != nil {
+				return false, nil
+			}
+			featureFlags[featureName] = featureState
 		}
 	}
 
@@ -139,6 +158,9 @@ func IsConsulServer(m serf.Member) (bool, *Server) {
 		}
 	}
 
+	// Check if the server is a non voter
+	_, nonVoter := m.Tags["nonvoter"]
+
 	addr := &net.TCPAddr{IP: m.Addr, Port: port}
 
 	parts := &Server{
@@ -158,6 +180,9 @@ func IsConsulServer(m serf.Member) (bool, *Server) {
 		RaftVersion:  raftVsn,
 		Status:       m.Status,
 		UseTLS:       useTLS,
+		NonVoter:     nonVoter,
+		ACLs:         acls,
+		FeatureFlags: featureFlags,
 	}
 	return true, parts
 }

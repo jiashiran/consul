@@ -21,7 +21,7 @@ func TestKVS_Apply(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	arg := structs.KVSRequest{
 		Datacenter: "dc1",
@@ -39,7 +39,7 @@ func TestKVS_Apply(t *testing.T) {
 
 	// Verify
 	state := s1.fsm.State()
-	_, d, err := state.KVSGet(nil, "test")
+	_, d, err := state.KVSGet(nil, "test", &arg.DirEnt.EnterpriseMeta)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestKVS_Apply(t *testing.T) {
 	}
 
 	// Verify
-	_, d, err = state.KVSGet(nil, "test")
+	_, d, err = state.KVSGet(nil, "test", &arg.DirEnt.EnterpriseMeta)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -74,6 +74,7 @@ func TestKVS_Apply_ACLDeny(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -82,7 +83,7 @@ func TestKVS_Apply_ACLDeny(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	// Create the ACL
 	arg := structs.ACLRequest{
@@ -90,7 +91,7 @@ func TestKVS_Apply_ACLDeny(t *testing.T) {
 		Op:         structs.ACLSet,
 		ACL: structs.ACL{
 			Name:  "User token",
-			Type:  structs.ACLTypeClient,
+			Type:  structs.ACLTokenTypeClient,
 			Rules: testListRules,
 		},
 		WriteRequest: structs.WriteRequest{Token: "root"},
@@ -141,7 +142,7 @@ func TestKVS_Get(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	arg := structs.KVSRequest{
 		Datacenter: "dc1",
@@ -185,6 +186,7 @@ func TestKVS_Get_ACLDeny(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -193,7 +195,7 @@ func TestKVS_Get_ACLDeny(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	arg := structs.KVSRequest{
 		Datacenter: "dc1",
@@ -229,7 +231,7 @@ func TestKVSEndpoint_List(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"/test/key1",
@@ -301,7 +303,7 @@ func TestKVSEndpoint_List_Blocking(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"/test/key1",
@@ -393,6 +395,7 @@ func TestKVSEndpoint_List_ACLDeny(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -401,7 +404,7 @@ func TestKVSEndpoint_List_ACLDeny(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"abe",
@@ -432,7 +435,7 @@ func TestKVSEndpoint_List_ACLDeny(t *testing.T) {
 		Op:         structs.ACLSet,
 		ACL: structs.ACL{
 			Name:  "User token",
-			Type:  structs.ACLTypeClient,
+			Type:  structs.ACLTokenTypeClient,
 			Rules: testListRules,
 		},
 		WriteRequest: structs.WriteRequest{Token: "root"},
@@ -478,6 +481,7 @@ func TestKVSEndpoint_List_ACLEnableKeyListPolicy(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 		c.ACLEnableKeyListPolicy = true
@@ -487,7 +491,7 @@ func TestKVSEndpoint_List_ACLEnableKeyListPolicy(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"abe",
@@ -530,7 +534,7 @@ key "zip" {
 		Op:         structs.ACLSet,
 		ACL: structs.ACL{
 			Name:  "User token",
-			Type:  structs.ACLTypeClient,
+			Type:  structs.ACLTokenTypeClient,
 			Rules: testListRules1,
 		},
 		WriteRequest: structs.WriteRequest{Token: "root"},
@@ -592,11 +596,7 @@ key "zip" {
 		t.Fatalf("err: %v", err)
 	}
 
-	actualKeys = []string{}
-
-	for _, key := range keyList.Keys {
-		actualKeys = append(actualKeys, key)
-	}
+	actualKeys = keyList.Keys
 
 	verify.Values(t, "", actualKeys, expectedKeys)
 
@@ -610,7 +610,7 @@ func TestKVSEndpoint_ListKeys(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"/test/key1",
@@ -676,6 +676,7 @@ func TestKVSEndpoint_ListKeys_ACLDeny(t *testing.T) {
 	t.Parallel()
 	dir1, s1 := testServerWithConfig(t, func(c *Config) {
 		c.ACLDatacenter = "dc1"
+		c.ACLsEnabled = true
 		c.ACLMasterToken = "root"
 		c.ACLDefaultPolicy = "deny"
 	})
@@ -684,7 +685,7 @@ func TestKVSEndpoint_ListKeys_ACLDeny(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	keys := []string{
 		"abe",
@@ -715,7 +716,7 @@ func TestKVSEndpoint_ListKeys_ACLDeny(t *testing.T) {
 		Op:         structs.ACLSet,
 		ACL: structs.ACL{
 			Name:  "User token",
-			Type:  structs.ACLTypeClient,
+			Type:  structs.ACLTokenTypeClient,
 			Rules: testListRules,
 		},
 		WriteRequest: structs.WriteRequest{Token: "root"},
@@ -759,10 +760,11 @@ func TestKVS_Apply_LockDelay(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	// Create and invalidate a session with a lock.
 	state := s1.fsm.State()
+
 	if err := state.EnsureNode(1, &structs.Node{Node: "foo", Address: "127.0.0.1"}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -782,7 +784,8 @@ func TestKVS_Apply_LockDelay(t *testing.T) {
 	if ok, err := state.KVSLock(3, d); err != nil || !ok {
 		t.Fatalf("err: %v", err)
 	}
-	if err := state.SessionDestroy(4, id); err != nil {
+
+	if err := state.SessionDestroy(4, id, nil); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -829,7 +832,7 @@ func TestKVS_Issue_1626(t *testing.T) {
 	codec := rpcClient(t, s1)
 	defer codec.Close()
 
-	testrpc.WaitForLeader(t, s1.RPC, "dc1")
+	testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
 
 	// Set up the first key.
 	{
