@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/NYTimes/gziphandler"
 	"github.com/armon/go-metrics"
+	"github.com/astaxie/beego/session"
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/cache"
 	"github.com/hashicorp/consul/agent/consul"
@@ -31,6 +33,231 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 )
+
+var (
+	html = `<html>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>
+</title>
+<body>
+<div class="form-wrapper animated bounceInDown">
+    <div class="form-header fc">
+        <h1 class="fl">SIGN IN</h1>
+
+    </div>
+    <div class="form-container">
+        <form>
+            <div class="field fc">
+                <span class="user-icon-user  fl"></span>
+                <input class="fl" id="name" name="fname" type="text" placeholder="User Name" />
+            </div>
+            <div class="field field-password fc">
+                <span class="user-icon-pword fl"></span>
+                <input class="fl" id="password" name="lname" type="password" placeholder="User Password" />
+            </div>
+
+        </form>
+    </div>
+    <div class="form-footer fc">
+        <div class="fl">
+        </div>
+        <a class="fr btn-primary " onclick="login()">SEND</a>
+    </div>
+</div>
+<!--<table align="center">
+    <tr>
+        <td>
+            用户名：
+        </td>
+        <td>
+            <input id="name" />
+        </td>
+    </tr>
+    <tr>
+        <td>
+            密码：
+        </td>
+        <td>
+            <input id="password" type="password" />
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <input type="button" value="登录" onclick="login()" />
+        </td>
+    </tr>
+</table> -->
+</body>
+<script type="application/javascript">
+    Date.prototype.Format = function(fmt) {
+        var o = {
+            "M+": this.getMonth() + 1,
+            "d+": this.getDate(),
+            "h+": this.getHours(),
+            "m+": this.getMinutes(),
+            "s+": this.getSeconds(),
+            "q+": Math.floor((this.getMonth() + 3) / 3),
+            "S": this.getMilliseconds()
+        };
+        if (/(y+)/.test(fmt)) fmt = fmt.replace(RegExp.$1, (this.getFullYear() + "").substr(4 - RegExp.$1.length));
+        for (var k in o)
+            if (new RegExp("(" + k + ")").test(fmt)) fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
+        return fmt
+    };
+    var time1 = new Date().Format("yyyyMMddhhmm");
+    console.log(time1);
+
+    function login() {
+        var name = document.getElementById("name").value;
+        var password = document.getElementById("password").value;
+        createxmlHttp(name, password);
+        //alert("ok")
+    }
+
+    function createxmlHttp(name, password) {
+        var xmlhttp;
+        if (window.XMLHttpRequest) {
+            xmlhttp = new XMLHttpRequest()
+        } else {
+            xmlhttp = new ActiveXObject("Microsoft.XMLHTTP")
+        }
+        console.log(document.cookie);
+        xmlhttp.onreadystatechange = function() {
+            if (xmlhttp.readyState == 4 && xmlhttp.status == 200) {
+                if (xmlhttp.responseText == "success") {
+                    window.location.reload()
+                } else {
+                    alert("用户名或密码有误")
+                }
+            }
+        };
+        xmlhttp.open('post', '/ui/login', true);
+        xmlhttp.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+        xmlhttp.send(b64EncodeUnicode('{"username":"' + name + '","password":"' + password + '"}'))
+    }
+
+    function b64EncodeUnicode(str) {
+        return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
+            return String.fromCharCode('0x' + p1)
+        }))
+    }
+</script>
+<style>
+    .fl{float:left;}
+    .fr{float:right;}
+    .clr{clear:both;height:0;width:0;min-height:0;visibility:hidden;overflow:hidden;display:block;}
+    .fc:after{content:".";display:block;height:0;font-size:0;clear:both;visibility:hidden;}
+    body {background:#ebeae2; font-family:Arial, Helvetica, sans-serif ;}
+    .form-wrapper { width:300px; margin:20px auto; }
+    .form-wrapper .form-header {  background:#333345;border-radius: 5px 5px 0px 0px;box-sizing:border-box; -moz-box-sizing:border-box; padding:10px 17px;}
+    .form-wrapper .form-header h1 { font-size:17px; color:#fff; display:inline; font-weight:100; margin-top:5px;}
+    .form-wrapper .form-header span {font-size: 18px;display: inline-block;padding: 3px 10px 4px 10px;background:#252536; border-radius: 4px; color:#fff; cursor:pointer;}
+    .form-wrapper .form-container{ background:#fefefe; padding:25px 30px 12px 30px;box-sizing:border-box; -moz-box-sizing:border-box; }
+    .field .user-icon-user { display:inline-block; width:50px; height:45px;border-radius: 5px 0px 0px 5px; transition:ease-in-out 0.3s; -webkit-transition:ease-in-out 0.3s;-moz-transition::ease-in-out 0.3s; -ms-transition:ease-in-out 0.3s;-o-transition:ease-in-out 0.3s; background:#dedede ; background-repeat:no-repeat;background-position: -51px 11px;}
+    .field .user-icon-pword { display:inline-block; width:50px; height:45px;border-radius: 5px 0px 0px 5px; transition:ease-in-out 0.3s; -webkit-transition:ease-in-out 0.3s;-moz-transition::ease-in-out 0.3s; -ms-transition:ease-in-out 0.3s;-o-transition:ease-in-out 0.3s; background:#dedede ; background-repeat:no-repeat;background-position: -51px -42px;}
+    .field{ margin-bottom:20px;}
+    .field input {width: 190px;height: 45px;box-sizing:border-box; -moz-box-sizing:border-box; font-size:16px; padding:10px; border-radius: 0px 5px 5px 0px;border: 1px solid #ccc; border-left:none; color:#a09f9f;}
+    .form-footer { background:#f4f4f4; border-radius: 0px 0px 5px 5px; border-top:1px dotted #e2e0de;box-sizing:border-box; -moz-box-sizing:border-box;  padding:15px 20px;}
+    .form-footer a { display: block;background:#677ec9;border-radius: 3px;padding: 10px 20px;color: #fff;font-size: 16px; cursor:pointer;}
+    .field .error {  background-color:#ea463c !important;box-sizing:border-box; -moz-box-sizing:border-box;background-position:-98px 11px;}
+    .field .accept {  background-color:#0C6 !important;box-sizing:border-box; -moz-box-sizing:border-box; background-position:0px 11px;}
+    .field.field-password { background-position:-51px 11px}
+    .field.field-password .accept {background-position: 0 -42px;}
+    .field.field-password .error {background-position: -98px -42px;}
+    .animated{-webkit-animation-fill-mode:both;-moz-animation-fill-mode:both;-ms-animation-fill-mode:both;-o-animation-fill-mode:both;animation-fill-mode:both;-webkit-animation-duration:1s;-moz-animation-duration:1s;-ms-animation-duration:1s;-o-animation-duration:1s;animation-duration:1s;}.animated.hinge{-webkit-animation-duration:2s;-moz-animation-duration:2s;-ms-animation-duration:2s;-o-animation-duration:2s;animation-duration:2s;}
+    @-webkit-keyframes bounceInDown {
+        0% {
+            opacity: 0;
+            -webkit-transform: translateY(-2000px);
+        }
+        60% {
+            opacity: 1;
+            -webkit-transform: translateY(30px);
+        }
+        80% {
+            -webkit-transform: translateY(-10px);
+        }
+        100% {
+            -webkit-transform: translateY(0);
+        }
+    }
+    @-moz-keyframes bounceInDown {
+        0% {
+            opacity: 0;
+            -moz-transform: translateY(-2000px);
+        }
+        60% {
+            opacity: 1;
+            -moz-transform: translateY(30px);
+        }
+        80% {
+            -moz-transform: translateY(-10px);
+        }
+
+        100% {
+            -moz-transform: translateY(0);
+        }
+    }
+    @-o-keyframes bounceInDown {
+        0% {
+            opacity: 0;
+            -o-transform: translateY(-2000px);
+        }
+        60% {
+            opacity: 1;
+            -o-transform: translateY(30px);
+        }
+        80% {
+            -o-transform: translateY(-10px);
+        }
+        100% {
+            -o-transform: translateY(0);
+        }
+    }
+    @keyframes bounceInDown {
+        0% {
+            opacity: 0;
+            transform: translateY(-2000px);
+        }
+        60% {
+            opacity: 1;
+            transform: translateY(30px);
+        }
+        80% {
+            transform: translateY(-10px);
+        }
+        100% {
+            transform: translateY(0);
+        }
+    }
+    .bounceInDown {
+        -webkit-animation-name: bounceInDown;
+        -moz-animation-name: bounceInDown;
+        -o-animation-name: bounceInDown;
+        animation-name: bounceInDown;
+        list-style:none
+    }
+</style>
+</html>`
+	globalSessions *session.Manager
+)
+
+func init() {
+	config := session.ManagerConfig{
+		CookieName:      "gosessionid",
+		Gclifetime:      3600,
+		EnableSetCookie: false,
+		Secure:          false,
+		CookieLifeTime:  3600,
+		ProviderConfig:  `{"cookieName":"gosessionid","securityKey":"beegocookiehashkey"}`,
+	}
+	var err error
+	globalSessions, err = session.NewManager("cookie", &config)
+	if err != nil {
+		fmt.Println(err)
+	}
+	go globalSessions.GC()
+}
 
 // MethodNotAllowedError should be returned by a handler when the HTTP method is not allowed.
 type MethodNotAllowedError struct {
@@ -222,6 +449,8 @@ type wrappedMux struct {
 
 // ServeHTTP implements the http.Handler interface.
 func (w *wrappedMux) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Add("Access-Control-Allow-Origin", "*")
+	resp.Header().Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 	w.handler.ServeHTTP(resp, req)
 }
 
@@ -334,9 +563,10 @@ func (s *HTTPServer) handler(enableDebug bool) http.Handler {
 			"/robots.txt",
 			uifsWithHeaders,
 		)
+
 		mux.Handle(
 			s.agent.config.UIContentPath,
-			http.StripPrefix(
+			StripPrefix( //http.StripPrefix
 				s.agent.config.UIContentPath,
 				uifsWithHeaders,
 			),
@@ -354,6 +584,93 @@ func (s *HTTPServer) handler(enableDebug bool) http.Handler {
 		mux:     mux,
 		handler: h,
 	}
+}
+
+//rewrite from http package
+// StripPrefix returns a handler that serves HTTP requests
+// by removing the given prefix from the request URL's Path
+// and invoking the handler h. StripPrefix handles a
+// request for a path that doesn't begin with prefix by
+// replying with an HTTP 404 not found error.
+func StripPrefix(prefix string, h http.Handler) http.Handler {
+	if prefix == "" {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := strings.TrimPrefix(r.URL.Path, prefix); len(p) < len(r.URL.Path) {
+			if !login(w, r, p) {
+				return
+			}
+			r2 := new(http.Request)
+			*r2 = *r
+			r2.URL = new(url.URL)
+			*r2.URL = *r.URL
+			r2.URL.Path = p
+			h.ServeHTTP(w, r2)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func login(w http.ResponseWriter, r *http.Request, p string) bool {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("err：", err)
+		}
+	}()
+	sess, err := globalSessions.SessionStart(w, r)
+	fmt.Println(sess.SessionID())
+	if err != nil {
+		fmt.Println("SessionStart err:", err)
+	}
+	cookie := http.Cookie{
+		Name:     "gosessionid",
+		Value:    sess.SessionID(),
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   int(3600),
+		//Domain:"http://localhost:63343",
+	}
+	http.SetCookie(w, &cookie)
+	user := sess.Get("user")
+	if user == nil || user.(string) == "" {
+		if strings.Contains(p, "login") { //登录逻辑
+			bs, err := ioutil.ReadAll(r.Body)
+			fmt.Println(string(bs), err)
+			decodeBytes, err := base64.StdEncoding.DecodeString(string(bs))
+			fmt.Println("no get user", string(decodeBytes), err)
+			var user User
+			err = json.Unmarshal(decodeBytes, &user)
+			fmt.Println(user, err)
+			if user.Name == "admin" && user.Pwd == "Aa123456"+time.Now().Format("200601021504") {
+				//sess.Values["user"] = string(bs)
+				sess.Set("user", string(bs))
+				sess.SessionRelease(w)
+				//sess.Save(r,w)
+
+				io.WriteString(w, "success")
+
+			} else {
+				io.WriteString(w, "fail")
+			}
+			return false
+		}
+		io.WriteString(w, html)
+		return false
+	} else {
+		decodeBytes, err := base64.StdEncoding.DecodeString(user.(string))
+		fmt.Println("get user", string(decodeBytes), err)
+		var user User
+		err = json.Unmarshal(decodeBytes, &user)
+		//fmt.Println(user,err)
+		return true
+	}
+}
+
+type User struct {
+	Name string `json:"username"`
+	Pwd  string `json:"password"`
 }
 
 func (s *HTTPServer) GenerateHTMLTemplateVars() map[string]interface{} {

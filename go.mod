@@ -16,11 +16,12 @@ require (
 	github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e
 	github.com/armon/go-metrics v0.0.0-20190430140413-ec5e00d3c878
 	github.com/armon/go-radix v1.0.0
+	github.com/astaxie/beego v1.12.1
 	github.com/aws/aws-sdk-go v1.25.41
 	github.com/coredns/coredns v1.1.2
 	github.com/digitalocean/godo v1.10.0 // indirect
 	github.com/docker/go-connections v0.3.0
-	github.com/elazarl/go-bindata-assetfs v0.0.0-20160803192304-e1a2a7ec64b0
+	github.com/elazarl/go-bindata-assetfs v1.0.0
 	github.com/envoyproxy/go-control-plane v0.8.0
 	github.com/go-ole/go-ole v1.2.1 // indirect
 	github.com/gogo/googleapis v1.1.0
